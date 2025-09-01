@@ -162,9 +162,23 @@ def calcular_metricas(catalogo, inventario):
         # Calcular tiempo máximo por grupo y máquina
         tiempo_por_grupo = df_temp.groupby(['GrupoParte', 'Maquina'])['TiempoNecesario'].max().reset_index()
         
-        # Asignar prioridad basada en tiempo necesario por grupo (más tiempo → mayor prioridad)
-        tiempo_por_grupo = tiempo_por_grupo.sort_values('TiempoNecesario', ascending=False)
-        tiempo_por_grupo['Prioridad'] = range(1, len(tiempo_por_grupo) + 1)
+        # Asignar prioridad separada por máquina (Transfer)
+        # Agrupar por máquina
+        prioridad_por_maquina = {}
+        for maquina in tiempo_por_grupo['Maquina'].unique():
+            # Filtrar por máquina
+            df_maquina = tiempo_por_grupo[tiempo_por_grupo['Maquina'] == maquina]
+            # Ordenar por tiempo necesario (más tiempo → mayor prioridad)
+            df_maquina = df_maquina.sort_values('TiempoNecesario', ascending=False)
+            # Asignar prioridad para esta máquina
+            for i, (idx, row) in enumerate(df_maquina.iterrows()):
+                prioridad_por_maquina[(row['GrupoParte'], row['Maquina'])] = i + 1
+        
+        # Asignar las prioridades al DataFrame
+        tiempo_por_grupo['Prioridad'] = tiempo_por_grupo.apply(
+            lambda row: prioridad_por_maquina.get((row['GrupoParte'], row['Maquina']), None), 
+            axis=1
+        )
         
         # Fusionar de vuelta las prioridades al DataFrame temporal
         df_temp = df_temp.merge(
@@ -229,6 +243,14 @@ if st.session_state.page == 'dashboard':
             
             # Ordenar las partes por nombre para que siempre aparezca primero el número más bajo
             partes_grupo_prioritario = partes_grupo_prioritario.sort_values('Parte')
+            
+            # Mostrar también el siguiente grupo en la cola (si existe)
+            has_next_group = len(grupos_ordenados) > 1
+            next_group = None
+            partes_siguiente_grupo = None
+            if has_next_group:
+                next_grupo_prioritario = grupos_ordenados[1][0]
+                partes_siguiente_grupo = df_faltante[df_faltante['GrupoParte'] == next_grupo_prioritario].sort_values('Parte')
             
             # Cabecera con el nombre base del grupo
             if "LH" in partes_grupo_prioritario['Parte'].iloc[0] or "RH" in partes_grupo_prioritario['Parte'].iloc[0]:
@@ -333,6 +355,32 @@ if st.session_state.page == 'dashboard':
                 </style>""", unsafe_allow_html=True)
                 
             st.progress(progreso / 100)
+            
+            # Mostrar información del siguiente grupo (si existe)
+            if has_next_group and partes_siguiente_grupo is not None and not partes_siguiente_grupo.empty:
+                st.markdown("---")
+                st.markdown("### 🔄 Siguiente en la cola")
+                
+                # Obtener el nombre base del siguiente grupo
+                siguiente_nombre_base = next_grupo_prioritario
+                siguiente_prioridad = partes_siguiente_grupo['Prioridad'].iloc[0]
+                
+                # Cabecera con datos básicos
+                st.markdown(f"**Set:** {siguiente_nombre_base}")
+                st.markdown(f"**Prioridad:** {int(siguiente_prioridad)}")
+                
+                # Mostrar inventario del siguiente grupo
+                siguiente_inventario_total = partes_siguiente_grupo['Inventario'].sum()
+                siguiente_objetivo_total = partes_siguiente_grupo['Objetivo'].sum()
+                siguiente_tiempo_max = partes_siguiente_grupo['TiempoNecesario'].max()
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.info(f"📦 **Inventario:** {int(siguiente_inventario_total)} piezas")
+                with col2:
+                    st.info(f"⏱ **Tiempo:** {siguiente_tiempo_max:.2f} horas")
+                with col3:
+                    st.info(f"📊 **Cajas:** {int(partes_siguiente_grupo['CajasNecesarias'].sum())}")
         else:
             st.info("🟢 Máquina Libre")
         
@@ -394,8 +442,21 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     # Tabla completa con todos los cálculos
     st.subheader("📋 Tabla General de Producción")
     
+    # Selector de máquina
+    maquina_seleccionada = st.selectbox(
+        "Seleccionar máquina",
+        ["Todas"] + list(maquinas),
+        index=0
+    )
+    
     # Preparar la tabla para mostrar
     df_tabla = df_metricas.copy()
+    
+    # Filtrar por máquina si se seleccionó una específica
+    if maquina_seleccionada != "Todas":
+        df_tabla = df_tabla[df_tabla['Maquina'] == maquina_seleccionada]
+    
+    # Ordenar por máquina y prioridad
     df_tabla = df_tabla.sort_values(['Maquina', 'Prioridad', 'GrupoParte'], na_position='last')
     df_tabla = df_tabla.fillna({'Prioridad': '-'})
     
@@ -427,8 +488,11 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     show_grouped = st.checkbox("Mostrar agrupado por sets", value=True)
     
     if show_grouped:
+        # Filtrar por máquina si se seleccionó una específica
+        df_para_agrupar = df_tabla
+        
         # Agrupar por GrupoParte y Máquina
-        df_grouped = df_tabla.groupby(['GrupoParte', 'Maquina']).agg({
+        df_grouped = df_para_agrupar.groupby(['GrupoParte', 'Maquina']).agg({
             'Inventario': 'mean',
             'Objetivo': 'mean',
             'Faltante': 'sum',
@@ -444,7 +508,7 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
         df_grouped['CajasNecesarias'] = df_grouped['CajasNecesarias'].astype(int)
         df_grouped['TiempoNecesario'] = df_grouped['TiempoNecesario'].round(2)
         
-        # Ordenar por prioridad
+        # Ordenar por máquina y prioridad
         df_grouped = df_grouped.sort_values(['Maquina', 'Prioridad'], na_position='last')
         df_grouped = df_grouped.fillna({'Prioridad': '-'})
         
@@ -460,6 +524,28 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
             use_container_width=True,
             hide_index=True
         )
+        
+        # Añadir vista de secuencia de producción por máquina
+        st.subheader("🔄 Secuencia de Producción por Máquina")
+        
+        # Mostrar la secuencia de producción para cada máquina
+        for maquina in maquinas:
+            if maquina_seleccionada == "Todas" or maquina_seleccionada == maquina:
+                # Filtrar grupos para esta máquina
+                df_maquina_grupos = df_grouped[df_grouped['Maquina'] == maquina]
+                
+                if not df_maquina_grupos.empty:
+                    # Ordenar por prioridad
+                    df_maquina_grupos = df_maquina_grupos.sort_values('Prioridad')
+                    
+                    st.write(f"### Máquina: {maquina}")
+                    
+                    # Crear lista ordenada con los grupos y sus métricas principales
+                    for i, (_, grupo) in enumerate(df_maquina_grupos.iterrows()):
+                        if pd.notna(grupo['Prioridad']) and grupo['Prioridad'] != '-':
+                            st.write(f"**{i+1}. {grupo['GrupoParte']}** - Prioridad: {int(grupo['Prioridad'])} - Tiempo: {grupo['TiempoNecesario']:.2f} horas - Cajas: {int(grupo['CajasNecesarias'])}")
+                    
+                    st.divider()
     
     # Información sobre el último cálculo
     st.caption("La prioridad se calcula según el tiempo necesario para alcanzar el objetivo.")
