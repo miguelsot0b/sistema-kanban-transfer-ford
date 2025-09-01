@@ -22,6 +22,9 @@ if 'page' not in st.session_state:
 
 if 'is_admin' not in st.session_state:
     st.session_state.is_admin = False
+    
+if 'forzar_sincronizacion' not in st.session_state:
+    st.session_state.forzar_sincronizacion = False
 
 # Función para cambiar de página
 def change_page(page):
@@ -57,11 +60,38 @@ if hasattr(st, 'cache_data'):
 else:
     cache_decorator = st.cache
 
-@cache_decorator
+# Función para calcular hash de un archivo
+def calcular_hash_archivo(ruta_archivo):
+    import hashlib
+    
+    if not os.path.exists(ruta_archivo):
+        return None
+    
+    try:
+        with open(ruta_archivo, "rb") as f:
+            contenido = f.read()
+            return hashlib.md5(contenido).hexdigest()
+    except Exception:
+        return None
+
+@cache_decorator(ttl=60)  # Caché de 60 segundos para permitir refrescar el catálogo
 def cargar_catalogo():
     try:
         # Intentar cargar desde la ruta relativa
-        return pd.read_csv("catalogo.csv")
+        df = pd.read_csv("catalogo.csv")
+        
+        # Calcular hash del catálogo para detectar cambios
+        hash_actual = calcular_hash_archivo("catalogo.csv")
+        
+        # Verificar si el hash ha cambiado
+        if 'ultimo_hash_catalogo' in st.session_state and st.session_state.ultimo_hash_catalogo != hash_actual:
+            # Si hay cambio en el catálogo, forzar sincronización de inventario
+            st.session_state.forzar_sincronizacion = True
+        
+        # Actualizar hash en session_state
+        st.session_state.ultimo_hash_catalogo = hash_actual
+        
+        return df
     except Exception as e:
         st.warning(f"No se pudo cargar el archivo catalogo.csv: {e}")
         st.info("Usando datos de ejemplo predeterminados")
@@ -74,11 +104,15 @@ def cargar_catalogo():
 # Cargar catálogo
 catalogo = cargar_catalogo()
 
+# Variables para control de cambios en el catálogo
+if 'ultimo_hash_catalogo' not in st.session_state:
+    st.session_state.ultimo_hash_catalogo = None
+
 # Obtener lista de máquinas únicas
 maquinas = sorted(catalogo['Maquina'].unique())
 
 # Funciones para guardar y cargar inventario de forma persistente
-def guardar_inventario(inventario):
+def guardar_inventario(inventario, usuario="Sistema", cambios=None):
     try:
         # Convertir el inventario a un formato serializable
         inventario_serializable = {}
@@ -89,8 +123,12 @@ def guardar_inventario(inventario):
         datos = {
             "inventario": inventario_serializable,
             "ultima_actualizacion": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "usuario": "Sistema"
+            "usuario": usuario
         }
+        
+        # Si hay registro de cambios, añadirlo
+        if cambios:
+            datos["cambios"] = cambios
         
         # Guardar en archivo JSON
         with open("inventario.json", "w") as f:
@@ -118,11 +156,89 @@ def cargar_inventario():
     # Valores predeterminados si no se puede cargar
     return {parte: 0 for parte in catalogo['Parte'].unique()}, "Nuevo"
 
-# Inicializar la sesión para inventario si no existe
-if 'inventario' not in st.session_state:
+def sincronizar_inventario(inventario_actual):
+    """Sincroniza el inventario con el catálogo actual, añadiendo nuevas partes 
+    y eliminando las que ya no existen."""
+    
+    # Obtener todas las partes actuales del catálogo
+    partes_catalogo = set(catalogo['Parte'].unique())
+    
+    # Obtener todas las partes en el inventario actual
+    partes_inventario = set(inventario_actual.keys())
+    
+    # Partes nuevas (están en el catálogo pero no en el inventario)
+    partes_nuevas = partes_catalogo - partes_inventario
+    
+    # Partes obsoletas (están en el inventario pero no en el catálogo)
+    partes_obsoletas = partes_inventario - partes_catalogo
+    
+    # Crear una copia del inventario para modificarla
+    inventario_sincronizado = inventario_actual.copy()
+    
+    # Añadir nuevas partes con valor 0
+    for parte in partes_nuevas:
+        inventario_sincronizado[parte] = 0
+    
+    # Eliminar partes obsoletas
+    for parte in partes_obsoletas:
+        if parte in inventario_sincronizado:
+            del inventario_sincronizado[parte]
+    
+    # Registrar los cambios si hubo modificaciones
+    if partes_nuevas or partes_obsoletas:
+        log = []
+        if partes_nuevas:
+            partes_nuevas_list = sorted(list(partes_nuevas))
+            log.append(f"Añadidas {len(partes_nuevas)} nuevas partes al inventario:")
+            for parte in partes_nuevas_list:
+                log.append(f"  - {parte}")
+        if partes_obsoletas:
+            partes_obsoletas_list = sorted(list(partes_obsoletas))
+            log.append(f"Eliminadas {len(partes_obsoletas)} partes obsoletas del inventario:")
+            for parte in partes_obsoletas_list:
+                log.append(f"  - {parte}")
+        return inventario_sincronizado, True, log
+    
+    # Si no hubo cambios, devolver el inventario original
+    return inventario_sincronizado, False, []
+
+# Inicializar o sincronizar el inventario
+if 'inventario' not in st.session_state or st.session_state.forzar_sincronizacion:
     inventario_cargado, ultima_act = cargar_inventario()
-    st.session_state.inventario = inventario_cargado
+    
+    # Sincronizar con el catálogo actual
+    inventario_sincronizado, cambios, log_cambios = sincronizar_inventario(inventario_cargado)
+    
+    # Si hubo cambios o se forzó la sincronización, guardar el inventario sincronizado
+    if cambios or st.session_state.forzar_sincronizacion:
+        # Añadir información de causa de la sincronización
+        if st.session_state.forzar_sincronizacion and not cambios:
+            log_cambios = ["Se detectaron cambios en el catálogo, pero no fue necesario actualizar el inventario."]
+        
+        # Añadir metadatos
+        datos_guardado = {
+            "inventario": inventario_sincronizado,
+            "ultima_actualizacion": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "usuario": "Sistema (Sincronización automática)",
+            "cambios": log_cambios
+        }
+        
+        # Guardar en archivo JSON
+        with open("inventario.json", "w") as f:
+            json.dump(datos_guardado, f, indent=4)
+        
+        ultima_act = datos_guardado["ultima_actualizacion"]
+        
+        # Si hubo cambios significativos, mostrar notificación
+        if cambios:
+            st.toast("El inventario se ha sincronizado con el catálogo actualizado", icon="🔄")
+    
+    st.session_state.inventario = inventario_sincronizado
     st.session_state.ultima_actualizacion = ultima_act
+    
+    # Restablecer el flag de sincronización forzada
+    if st.session_state.forzar_sincronizacion:
+        st.session_state.forzar_sincronizacion = False
 
 if 'temp_inventario' not in st.session_state:
     st.session_state.temp_inventario = st.session_state.inventario.copy()
@@ -488,15 +604,29 @@ elif st.session_state.page == 'update_inventory':
             if not usuario.strip():
                 st.warning("Por favor ingrese su nombre para registrar el cambio")
             else:
+                # Detectar cambios en el inventario
+                cambios_inventario = []
+                for parte, nuevo_valor in st.session_state.temp_inventario.items():
+                    if parte in st.session_state.inventario:
+                        valor_anterior = st.session_state.inventario.get(parte, 0)
+                        if nuevo_valor != valor_anterior:
+                            cambio = nuevo_valor - valor_anterior
+                            signo = "+" if cambio > 0 else ""
+                            cambios_inventario.append(f"Parte {parte}: {valor_anterior} → {nuevo_valor} ({signo}{cambio})")
+                
                 # Actualizar inventario en session_state
                 st.session_state.inventario = st.session_state.temp_inventario.copy()
                 
-                # Guardar en archivo persistente
+                # Guardar en archivo persistente con registro de cambios
                 datos_guardado = {
                     "inventario": st.session_state.inventario,
                     "ultima_actualizacion": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "usuario": usuario
                 }
+                
+                # Añadir cambios al registro si los hubo
+                if cambios_inventario:
+                    datos_guardado["cambios"] = [f"Actualización manual del inventario:"] + cambios_inventario
                 
                 with open("inventario.json", "w") as f:
                     json.dump(datos_guardado, f, indent=4)
@@ -517,15 +647,19 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     # PÁGINA DE ADMINISTRADOR
     st.header("🔐 Panel de Administrador")
     
-    # Tabla completa con todos los cálculos
-    st.subheader("📋 Tabla General de Producción")
+    # Crear pestañas para diferentes secciones del panel de administrador
+    tab1, tab2 = st.tabs(["📋 Tabla General", "📝 Registro de Cambios"])
     
-    # Selector de máquina
-    maquina_seleccionada = st.selectbox(
-        "Seleccionar máquina",
-        ["Todas"] + list(maquinas),
-        index=0
-    )
+    with tab1:
+        # Tabla completa con todos los cálculos
+        st.subheader("📋 Tabla General de Producción")
+        
+        # Selector de máquina
+        maquina_seleccionada = st.selectbox(
+            "Seleccionar máquina",
+            ["Todas"] + list(maquinas),
+            index=0
+        )
     
     # Preparar la tabla para mostrar
     df_tabla = df_metricas.copy()
@@ -627,6 +761,62 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     
     # Información sobre el último cálculo
     st.caption("La prioridad se calcula según el tiempo necesario para alcanzar el objetivo.")
+    
+    with tab2:
+        # Mostrar registro de cambios en el catálogo y en el inventario
+        st.subheader("📝 Registro de Cambios")
+        
+        # Botón para forzar sincronización
+        if st.button("🔄 Forzar sincronización con catálogo", key="force_sync"):
+            st.session_state.forzar_sincronizacion = True
+            st.success("Sincronizando inventario con catálogo actualizado...")
+            st.rerun()
+        
+        # Verificar si existe el archivo de inventario
+        # Mostrar información sobre el catálogo
+        if os.path.exists("catalogo.csv"):
+            try:
+                # Obtener fecha de modificación del archivo de catálogo
+                fecha_mod_catalogo = datetime.datetime.fromtimestamp(os.path.getmtime("catalogo.csv"))
+                st.markdown("### Información del Catálogo")
+                st.markdown(f"**Última modificación:** {fecha_mod_catalogo.strftime('%Y-%m-%d %H:%M:%S')}")
+                st.markdown(f"**Número de partes:** {len(catalogo['Parte'].unique())}")
+                st.markdown(f"**Máquinas:** {', '.join(sorted(catalogo['Maquina'].unique()))}")
+            except Exception as e:
+                st.error(f"Error al leer información del catálogo: {e}")
+        
+        st.markdown("---")
+        
+        if os.path.exists("inventario.json"):
+            try:
+                # Cargar desde archivo JSON
+                with open("inventario.json", "r") as f:
+                    datos_inventario = json.load(f)
+                
+                # Mostrar información de la última actualización
+                st.markdown("### Última Actualización del Inventario")
+                st.markdown(f"**Fecha:** {datos_inventario.get('ultima_actualizacion', 'Desconocida')}")
+                st.markdown(f"**Usuario:** {datos_inventario.get('usuario', 'Sistema')}")
+                
+                # Mostrar cambios si existen
+                if "cambios" in datos_inventario:
+                    st.markdown("### Cambios Realizados")
+                    for cambio in datos_inventario["cambios"]:
+                        st.markdown(f"- {cambio}")
+                    
+                    # Mostrar detalles expandibles si hay muchos cambios
+                    if any("  - " in cambio for cambio in datos_inventario["cambios"]):
+                        with st.expander("Ver detalles completos de los cambios"):
+                            for cambio in datos_inventario["cambios"]:
+                                if "  - " in cambio:
+                                    st.markdown(f"{cambio}")
+                
+                # Mostrar historial de actualizaciones previas (podría implementarse en el futuro)
+                st.info("El registro detallado de cambios históricos se implementará en una actualización futura.")
+            except Exception as e:
+                st.error(f"Error al cargar el registro de cambios: {e}")
+        else:
+            st.warning("No se ha encontrado registro de cambios. Se creará uno cuando se actualice el inventario.")
     
     # Opción para cerrar sesión de administrador
     if st.button("Cerrar Sesión"):
