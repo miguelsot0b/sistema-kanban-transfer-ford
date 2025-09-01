@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import math
 import os
+import hashlib
 
 try:
     # Configuración de la página
@@ -12,6 +13,27 @@ try:
     )
 except Exception as e:
     st.write(f"Error en configuración: {e}")
+
+# Inicializar estados de sesión
+if 'page' not in st.session_state:
+    st.session_state.page = 'dashboard'
+
+if 'is_admin' not in st.session_state:
+    st.session_state.is_admin = False
+
+# Función para cambiar de página
+def change_page(page):
+    st.session_state.page = page
+
+# Función para autenticación de admin
+def login_admin(username, password):
+    # Hash simple para demostración (en producción usar un método más seguro)
+    hashed_pw = hashlib.sha256(password.encode()).hexdigest()
+    # Usuario admin con contraseña "admin123"
+    if username == "admin" and hashed_pw == "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9":
+        st.session_state.is_admin = True
+        return True
+    return False
 
 # Título principal
 st.title("🏭 Sistema Kanban Transfer Ford")
@@ -53,37 +75,38 @@ catalogo = cargar_catalogo()
 # Obtener lista de máquinas únicas
 maquinas = sorted(catalogo['Maquina'].unique())
 
-# Barra lateral para entrada de inventario actual
-st.sidebar.header("📦 Inventario Actual")
-
 # Inicializar la sesión para inventario si no existe
 if 'inventario' not in st.session_state:
     st.session_state.inventario = {parte: 0 for parte in catalogo['Parte'].unique()}
+
+if 'temp_inventario' not in st.session_state:
     st.session_state.temp_inventario = {parte: 0 for parte in catalogo['Parte'].unique()}
 
-# Formulario para actualizar inventario
-with st.sidebar.form("form_inventario"):
-    st.subheader("Ingrese el inventario actual:")
+# Barra lateral con navegación
+st.sidebar.header("Navegación")
+
+# Botón para ir a la página de actualización de inventario
+if st.sidebar.button("📝 Actualizar Inventario"):
+    change_page('update_inventory')
     
-    # Crear input para cada número de parte único
-    partes_unicas = sorted(catalogo['Parte'].unique())
+# Botón para ir al dashboard principal
+if st.sidebar.button("📊 Dashboard"):
+    change_page('dashboard')
+
+# Sección para administradores
+st.sidebar.header("Administración")
+
+# Formulario de login para administradores
+with st.sidebar.expander("Acceso Administrador"):
+    admin_user = st.text_input("Usuario", key="admin_user")
+    admin_pwd = st.text_input("Contraseña", type="password", key="admin_pwd")
     
-    for parte in partes_unicas:
-        # Usar valores temporales para no actualizar inmediatamente
-        st.session_state.temp_inventario[parte] = st.number_input(
-            f"{parte}", 
-            min_value=0, 
-            value=st.session_state.inventario[parte],
-            key=f"inv_{parte}"
-        )
-    
-    # Botón para actualizar
-    submitted = st.form_submit_button("Actualizar Inventario")
-    
-    # Solo actualizar el inventario real cuando se presiona el botón
-    if submitted:
-        st.session_state.inventario = st.session_state.temp_inventario.copy()
-        st.success("✅ Inventario actualizado correctamente")
+    if st.button("Iniciar Sesión"):
+        if login_admin(admin_user, admin_pwd):
+            st.success("✅ Acceso concedido")
+            change_page('admin')
+        else:
+            st.error("❌ Usuario o contraseña incorrectos")
 
 # Calcular métricas
 def calcular_metricas(catalogo, inventario):
@@ -125,76 +148,144 @@ def calcular_metricas(catalogo, inventario):
 # Calcular métricas basadas en inventario actual
 df_metricas = calcular_metricas(catalogo, st.session_state.inventario)
 
-# Sección principal - Dashboard por máquina
-st.header("📊 Dashboard por Máquina")
+# Contenido principal basado en la página seleccionada
+if st.session_state.page == 'dashboard':
+    # PÁGINA PRINCIPAL - DASHBOARD
+    st.header("📊 Dashboard por Máquina")
 
-# Crear una fila para cada máquina
-for maquina in maquinas:
-    st.subheader(f"Máquina: {maquina}")
-    
-    # Filtrar partes para esta máquina
-    df_maquina = df_metricas[df_metricas['Maquina'] == maquina].copy()
-    
-    # Si hay partes con faltante para esta máquina
-    df_faltante = df_maquina[df_maquina['Faltante'] > 0].sort_values('Prioridad')
-    
-    if not df_faltante.empty:
-        # Tomar la parte con mayor prioridad (número más bajo)
-        parte_asignada = df_faltante.iloc[0]
+    # Crear una fila para cada máquina
+    for maquina in maquinas:
+        st.subheader(f"Máquina: {maquina}")
         
-        # Crear columnas para mostrar la información
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        # Filtrar partes para esta máquina
+        df_maquina = df_metricas[df_metricas['Maquina'] == maquina].copy()
         
+        # Si hay partes con faltante para esta máquina
+        df_faltante = df_maquina[df_maquina['Faltante'] > 0].sort_values('Prioridad')
+        
+        if not df_faltante.empty:
+            # Tomar la parte con mayor prioridad (número más bajo)
+            parte_asignada = df_faltante.iloc[0]
+            
+            # Crear columnas para mostrar la información
+            col1, col2, col3, col4 = st.columns(4)
+            
+            # Mostrar el nombre completo del producto (sin truncar)
+            with col1:
+                st.write("**Producto:**")
+                st.write(f"**{parte_asignada['Parte']}**")
+                
+            with col2:
+                st.metric("Objetivo", f"{int(parte_asignada['Objetivo'])}")
+                
+            with col3:
+                st.metric("Cajas a Correr", f"{int(parte_asignada['CajasNecesarias'])}")
+                
+            with col4:
+                st.metric("Tiempo (horas)", f"{parte_asignada['TiempoNecesario']:.2f}")
+            
+            # Mostrar prioridad con un indicador visual
+            st.write(f"**Prioridad:** {int(parte_asignada['Prioridad'])}")
+            
+            # Barra de progreso para visualizar el avance hacia el objetivo
+            progreso = min(100, (parte_asignada['Inventario'] / parte_asignada['Objetivo']) * 100)
+            st.progress(progreso / 100)
+        else:
+            st.info("🟢 Máquina Libre")
+        
+        st.divider()  # Separador visual entre máquinas
+
+elif st.session_state.page == 'update_inventory':
+    # PÁGINA DE ACTUALIZACIÓN DE INVENTARIO
+    st.header("📝 Actualización de Inventario")
+    
+    with st.form("update_inventory_form"):
+        st.write("Ingrese el inventario actual para cada producto:")
+        
+        # Crear dos columnas para organizar mejor los inputs
+        col1, col2 = st.columns(2)
+        
+        # Crear input para cada número de parte único
+        partes_unicas = sorted(catalogo['Parte'].unique())
+        mitad = len(partes_unicas) // 2
+        
+        # Primera columna
         with col1:
-            st.metric("Producto", parte_asignada['Parte'])
+            for i, parte in enumerate(partes_unicas[:mitad]):
+                st.session_state.temp_inventario[parte] = st.number_input(
+                    f"{parte}", 
+                    min_value=0, 
+                    value=st.session_state.inventario[parte],
+                    key=f"inv_{parte}"
+                )
         
+        # Segunda columna
         with col2:
-            st.metric("Inventario", f"{int(parte_asignada['Inventario'])}")
-            
-        with col3:
-            st.metric("Objetivo", f"{int(parte_asignada['Objetivo'])}")
-            
-        with col4:
-            st.metric("Cajas a Correr", f"{int(parte_asignada['CajasNecesarias'])}")
-            
-        with col5:
-            st.metric("Tiempo (horas)", f"{parte_asignada['TiempoNecesario']:.2f}")
-            
-        with col6:
-            st.metric("Prioridad", f"{int(parte_asignada['Prioridad'])}")
-    else:
-        st.info("🟢 Máquina Libre")
+            for i, parte in enumerate(partes_unicas[mitad:]):
+                st.session_state.temp_inventario[parte] = st.number_input(
+                    f"{parte}", 
+                    min_value=0, 
+                    value=st.session_state.inventario[parte],
+                    key=f"inv2_{parte}"
+                )
+        
+        # Botón para guardar cambios
+        submitted = st.form_submit_button("Guardar Cambios")
+        
+        if submitted:
+            st.session_state.inventario = st.session_state.temp_inventario.copy()
+            st.success("✅ Inventario actualizado correctamente")
+            # Volver automáticamente al dashboard después de actualizar
+            st.session_state.page = 'dashboard'
+            st.rerun()
     
-    st.divider()  # Separador visual entre máquinas
+    # Botón para cancelar y volver al dashboard
+    if st.button("Cancelar"):
+        st.session_state.page = 'dashboard'
+        st.rerun()
 
-# Tabla completa con todos los cálculos
-st.header("📋 Tabla General de Producción")
-
-# Preparar la tabla para mostrar
-df_tabla = df_metricas.copy()
-df_tabla = df_tabla.sort_values(['Maquina', 'Prioridad'], na_position='last')
-df_tabla = df_tabla.fillna({'Prioridad': '-'})
-
-# Formatear columnas numéricas
-df_tabla['Inventario'] = df_tabla['Inventario'].astype(int)
-df_tabla['Objetivo'] = df_tabla['Objetivo'].astype(int)
-df_tabla['Faltante'] = df_tabla['Faltante'].astype(int)
-df_tabla['CajasNecesarias'] = df_tabla['CajasNecesarias'].astype(int)
-df_tabla['TiempoNecesario'] = df_tabla['TiempoNecesario'].round(2)
-
-# Columnas a mostrar
-columnas_mostrar = [
-    'Parte', 'Maquina', 'Inventario', 'Objetivo', 
-    'Faltante', 'StdPack', 'CajasNecesarias', 
-    'Rate', 'TiempoNecesario', 'Prioridad'
-]
-
-# Mostrar la tabla
-st.dataframe(
-    df_tabla[columnas_mostrar], 
-    use_container_width=True,
-    hide_index=True
-)
-
-# Información sobre el último cálculo
-st.caption("La prioridad se calcula según el tiempo necesario para alcanzar el objetivo.")
+elif st.session_state.page == 'admin' and st.session_state.is_admin:
+    # PÁGINA DE ADMINISTRADOR
+    st.header("🔐 Panel de Administrador")
+    
+    # Tabla completa con todos los cálculos
+    st.subheader("📋 Tabla General de Producción")
+    
+    # Preparar la tabla para mostrar
+    df_tabla = df_metricas.copy()
+    df_tabla = df_tabla.sort_values(['Maquina', 'Prioridad'], na_position='last')
+    df_tabla = df_tabla.fillna({'Prioridad': '-'})
+    
+    # Formatear columnas numéricas
+    df_tabla['Inventario'] = df_tabla['Inventario'].astype(int)
+    df_tabla['Objetivo'] = df_tabla['Objetivo'].astype(int)
+    df_tabla['Faltante'] = df_tabla['Faltante'].astype(int)
+    df_tabla['CajasNecesarias'] = df_tabla['CajasNecesarias'].astype(int)
+    df_tabla['TiempoNecesario'] = df_tabla['TiempoNecesario'].round(2)
+    
+    # Columnas a mostrar
+    columnas_mostrar = [
+        'Parte', 'Maquina', 'Inventario', 'Objetivo', 
+        'Faltante', 'StdPack', 'CajasNecesarias', 
+        'Rate', 'TiempoNecesario', 'Prioridad'
+    ]
+    
+    # Mostrar la tabla
+    st.dataframe(
+        df_tabla[columnas_mostrar], 
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    # Información sobre el último cálculo
+    st.caption("La prioridad se calcula según el tiempo necesario para alcanzar el objetivo.")
+    
+    # Opción para cerrar sesión de administrador
+    if st.button("Cerrar Sesión"):
+        st.session_state.is_admin = False
+        st.session_state.page = 'dashboard'
+        st.rerun()
+else:
+    # Redirigir a dashboard si hay algún error
+    st.session_state.page = 'dashboard'
+    st.rerun()
