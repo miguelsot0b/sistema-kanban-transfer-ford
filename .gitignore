@@ -40,3 +40,6 @@ ENV/
 # OS specific
 .DS_Store
 Thumbs.db
+
+# Datos específicos de la instalación
+inventario.json

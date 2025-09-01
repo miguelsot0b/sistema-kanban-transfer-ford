@@ -3,6 +3,8 @@ import pandas as pd
 import math
 import os
 import hashlib
+import json
+import datetime
 
 try:
     # Configuración de la página
@@ -75,12 +77,55 @@ catalogo = cargar_catalogo()
 # Obtener lista de máquinas únicas
 maquinas = sorted(catalogo['Maquina'].unique())
 
+# Funciones para guardar y cargar inventario de forma persistente
+def guardar_inventario(inventario):
+    try:
+        # Convertir el inventario a un formato serializable
+        inventario_serializable = {}
+        for parte, cantidad in inventario.items():
+            inventario_serializable[parte] = int(cantidad)
+        
+        # Añadir metadatos
+        datos = {
+            "inventario": inventario_serializable,
+            "ultima_actualizacion": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "usuario": "Sistema"
+        }
+        
+        # Guardar en archivo JSON
+        with open("inventario.json", "w") as f:
+            json.dump(datos, f, indent=4)
+        
+        return True
+    except Exception as e:
+        st.error(f"Error al guardar el inventario: {e}")
+        return False
+
+def cargar_inventario():
+    try:
+        # Verificar si el archivo existe
+        if os.path.exists("inventario.json"):
+            # Cargar desde archivo JSON
+            with open("inventario.json", "r") as f:
+                datos = json.load(f)
+            
+            # Verificar estructura
+            if "inventario" in datos:
+                return datos["inventario"], datos.get("ultima_actualizacion", "Desconocida")
+    except Exception as e:
+        st.warning(f"Error al cargar el inventario desde archivo: {e}")
+    
+    # Valores predeterminados si no se puede cargar
+    return {parte: 0 for parte in catalogo['Parte'].unique()}, "Nuevo"
+
 # Inicializar la sesión para inventario si no existe
 if 'inventario' not in st.session_state:
-    st.session_state.inventario = {parte: 0 for parte in catalogo['Parte'].unique()}
+    inventario_cargado, ultima_act = cargar_inventario()
+    st.session_state.inventario = inventario_cargado
+    st.session_state.ultima_actualizacion = ultima_act
 
 if 'temp_inventario' not in st.session_state:
-    st.session_state.temp_inventario = {parte: 0 for parte in catalogo['Parte'].unique()}
+    st.session_state.temp_inventario = st.session_state.inventario.copy()
 
 # Barra lateral con navegación
 st.sidebar.header("Navegación")
@@ -206,6 +251,19 @@ df_metricas = calcular_metricas(catalogo, st.session_state.inventario)
 if st.session_state.page == 'dashboard':
     # PÁGINA PRINCIPAL - DASHBOARD
     st.header("📊 Dashboard por Máquina")
+    
+    # Mostrar información sobre la última actualización
+    if hasattr(st.session_state, 'ultima_actualizacion'):
+        if st.session_state.ultima_actualizacion != "Nuevo":
+            try:
+                # Cargar datos completos para mostrar usuario
+                with open("inventario.json", "r") as f:
+                    datos = json.load(f)
+                usuario = datos.get("usuario", "Sistema")
+                fecha = datos.get("ultima_actualizacion", st.session_state.ultima_actualizacion)
+                st.caption(f"📅 Última actualización: {fecha} por {usuario}")
+            except:
+                st.caption(f"📅 Última actualización: {st.session_state.ultima_actualizacion}")
 
     # Crear una fila para cada máquina
     for maquina in maquinas:
@@ -420,15 +478,35 @@ elif st.session_state.page == 'update_inventory':
                     key=f"inv2_{parte}"
                 )
         
+        # Campos para registrar usuario que realiza el cambio
+        usuario = st.text_input("Su Nombre (para registro de cambios)", key="nombre_usuario")
+        
         # Botón para guardar cambios
         submitted = st.form_submit_button("Guardar Cambios")
         
         if submitted:
-            st.session_state.inventario = st.session_state.temp_inventario.copy()
-            st.success("✅ Inventario actualizado correctamente")
-            # Volver automáticamente al dashboard después de actualizar
-            st.session_state.page = 'dashboard'
-            st.rerun()
+            if not usuario.strip():
+                st.warning("Por favor ingrese su nombre para registrar el cambio")
+            else:
+                # Actualizar inventario en session_state
+                st.session_state.inventario = st.session_state.temp_inventario.copy()
+                
+                # Guardar en archivo persistente
+                datos_guardado = {
+                    "inventario": st.session_state.inventario,
+                    "ultima_actualizacion": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "usuario": usuario
+                }
+                
+                with open("inventario.json", "w") as f:
+                    json.dump(datos_guardado, f, indent=4)
+                
+                st.session_state.ultima_actualizacion = datos_guardado["ultima_actualizacion"]
+                
+                st.success(f"✅ Inventario actualizado correctamente por {usuario}")
+                # Volver automáticamente al dashboard después de actualizar
+                st.session_state.page = 'dashboard'
+                st.rerun()
     
     # Botón para cancelar y volver al dashboard
     if st.button("Cancelar"):
