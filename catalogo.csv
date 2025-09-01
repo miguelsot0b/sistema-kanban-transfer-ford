@@ -1,0 +1,15 @@
+Parte,StdPack,Objetivo,Maquina,Rate
+CX430 Header Front LH,40,978,Transfer 7,120
+CX430 Header Front RH,40,978,Transfer 7,120
+CX430 Header Rear LH,56,880,Transfer 7,110
+CX430 Header Rear RH,56,880,Transfer 7,110
+CX430 OB RR LH,70,978,Transfer 8,130
+CX430 OB RR RH,70,978,Transfer 8,130
+U725 OB FRT 5D LH,54,821,Transfer 8,120
+U725 OB FRT 5D RH,54,821,Transfer 8,120
+U725 OB FRT 3D LH,54,335,Transfer 8,110
+U725 OB FRT 3D RH,54,335,Transfer 8,110
+U725 OB RR 5D LH,54,821,Transfer 8,120
+U725 OB RR 5D RH,54,821,Transfer 8,120
+U725 OB RR 5D LH,54,821,Transfer 7,120
+U725 OB RR 5D RH,54,821,Transfer 7,120
