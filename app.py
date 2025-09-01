@@ -16,7 +16,13 @@ st.title("🏭 Sistema Kanban Transfer Ford")
 # Función para cargar el catálogo
 @st.cache_data
 def cargar_catalogo():
-    return pd.read_csv("catalogo.csv")
+    try:
+        # Intentar cargar desde la ruta relativa
+        return pd.read_csv("catalogo.csv")
+    except Exception as e:
+        st.error(f"Error al cargar el catálogo: {e}")
+        # Crear un DataFrame vacío como fallback
+        return pd.DataFrame(columns=["Parte", "StdPack", "Objetivo", "Maquina", "Rate"])
 
 # Cargar catálogo
 catalogo = cargar_catalogo()
