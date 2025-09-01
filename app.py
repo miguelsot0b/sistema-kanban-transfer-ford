@@ -108,6 +108,22 @@ with st.sidebar.expander("Acceso Administrador"):
         else:
             st.error("❌ Usuario o contraseña incorrectos")
 
+# Función para identificar parejas LH/RH
+def identificar_parejas(partes):
+    parejas = {}
+    for parte in partes:
+        # Verificar si es LH o RH
+        if " LH" in parte or " RH" in parte:
+            # Extraer nombre base (sin LH/RH)
+            base_name = parte.replace(" LH", "").replace(" RH", "")
+            if base_name not in parejas:
+                parejas[base_name] = []
+            parejas[base_name].append(parte)
+    
+    # Filtrar solo los que tienen pares completos (LH y RH)
+    pares_completos = {k: v for k, v in parejas.items() if len(v) >= 2}
+    return pares_completos
+
 # Calcular métricas
 def calcular_metricas(catalogo, inventario):
     # Crear una copia del catálogo para no modificar el original
@@ -132,16 +148,40 @@ def calcular_metricas(catalogo, inventario):
     df_temp = df_temp[df_temp['Faltante'] > 0]  # Solo considerar partes con faltante
     
     if not df_temp.empty:
-        # Asignar prioridad basada en tiempo necesario (más tiempo → mayor prioridad)
-        df_temp = df_temp.sort_values('TiempoNecesario', ascending=False)
-        df_temp['Prioridad'] = range(1, len(df_temp) + 1)
+        # Identificar parejas LH/RH
+        parejas = identificar_parejas(df_temp['Parte'].unique())
         
-        # Fusionar de vuelta las prioridades al DataFrame original
-        df = df.merge(df_temp[['Parte', 'Maquina', 'Prioridad']], 
-                     on=['Parte', 'Maquina'], 
-                     how='left')
+        # Crear una columna para agrupar parejas
+        df_temp['GrupoParte'] = df_temp['Parte']
+        
+        # Reemplazar nombres para agrupar parejas
+        for base_name, parts in parejas.items():
+            for part in parts:
+                df_temp.loc[df_temp['Parte'] == part, 'GrupoParte'] = base_name
+        
+        # Calcular tiempo máximo por grupo y máquina
+        tiempo_por_grupo = df_temp.groupby(['GrupoParte', 'Maquina'])['TiempoNecesario'].max().reset_index()
+        
+        # Asignar prioridad basada en tiempo necesario por grupo (más tiempo → mayor prioridad)
+        tiempo_por_grupo = tiempo_por_grupo.sort_values('TiempoNecesario', ascending=False)
+        tiempo_por_grupo['Prioridad'] = range(1, len(tiempo_por_grupo) + 1)
+        
+        # Fusionar de vuelta las prioridades al DataFrame temporal
+        df_temp = df_temp.merge(
+            tiempo_por_grupo[['GrupoParte', 'Maquina', 'Prioridad']], 
+            on=['GrupoParte', 'Maquina'], 
+            how='left'
+        )
+        
+        # Fusionar las prioridades al DataFrame original
+        df = df.merge(
+            df_temp[['Parte', 'Maquina', 'Prioridad', 'GrupoParte']], 
+            on=['Parte', 'Maquina'], 
+            how='left'
+        )
     else:
         df['Prioridad'] = None
+        df['GrupoParte'] = df['Parte']
     
     return df
 
@@ -161,34 +201,137 @@ if st.session_state.page == 'dashboard':
         df_maquina = df_metricas[df_metricas['Maquina'] == maquina].copy()
         
         # Si hay partes con faltante para esta máquina
-        df_faltante = df_maquina[df_maquina['Faltante'] > 0].sort_values('Prioridad')
+        df_faltante = df_maquina[df_maquina['Faltante'] > 0].copy()
         
         if not df_faltante.empty:
-            # Tomar la parte con mayor prioridad (número más bajo)
-            parte_asignada = df_faltante.iloc[0]
+            # Agrupar por GrupoParte para mostrar los sets juntos
+            grupos_partes = df_faltante['GrupoParte'].unique()
             
-            # Crear columnas para mostrar la información
-            col1, col2, col3, col4 = st.columns(4)
+            # Ordenar por prioridad primero, luego por número de parte más bajo
+            prioridades = {}
+            for grupo in grupos_partes:
+                partes_grupo = df_faltante[df_faltante['GrupoParte'] == grupo]
+                if not partes_grupo.empty:
+                    # Guardar prioridad y número de parte más bajo para este grupo
+                    prioridades[grupo] = (
+                        partes_grupo['Prioridad'].iloc[0],  # Prioridad
+                        min(partes_grupo['Parte'].tolist())  # Parte más baja lexicográficamente
+                    )
             
-            # Mostrar el nombre completo del producto (sin truncar)
-            with col1:
-                st.write("**Producto:**")
-                st.write(f"**{parte_asignada['Parte']}**")
+            # Ordenar grupos por prioridad primero, luego por número de parte
+            grupos_ordenados = sorted(prioridades.items(), key=lambda x: (x[1][0], x[1][1]))
+            
+            # Tomar el grupo con mayor prioridad (o número de parte más bajo en caso de empate)
+            grupo_prioritario = grupos_ordenados[0][0]
+            
+            # Filtrar las partes de este grupo
+            partes_grupo_prioritario = df_faltante[df_faltante['GrupoParte'] == grupo_prioritario]
+            
+            # Ordenar las partes por nombre para que siempre aparezca primero el número más bajo
+            partes_grupo_prioritario = partes_grupo_prioritario.sort_values('Parte')
+            
+            # Cabecera con el nombre base del grupo
+            if "LH" in partes_grupo_prioritario['Parte'].iloc[0] or "RH" in partes_grupo_prioritario['Parte'].iloc[0]:
+                nombre_base = grupo_prioritario
+                st.markdown(f"### Set: **{nombre_base}**")
+                st.markdown(f"**Prioridad:** {int(partes_grupo_prioritario['Prioridad'].iloc[0])}")
                 
-            with col2:
-                st.metric("Objetivo", f"{int(parte_asignada['Objetivo'])}")
+                # Mostrar información del inventario en una caja destacada
+                inventario_total = partes_grupo_prioritario['Inventario'].sum()
+                objetivo_total = partes_grupo_prioritario['Objetivo'].sum()
                 
-            with col3:
-                st.metric("Cajas a Correr", f"{int(parte_asignada['CajasNecesarias'])}")
+                st.info(f"📦 **Inventario Actual Total:** {int(inventario_total)} piezas de {int(objetivo_total)} objetivo")
                 
-            with col4:
-                st.metric("Tiempo (horas)", f"{parte_asignada['TiempoNecesario']:.2f}")
+                # Crear una tabla para el set
+                data_set = []
+                
+                for _, parte in partes_grupo_prioritario.iterrows():
+                    lado = "Izquierdo (LH)" if "LH" in parte['Parte'] else "Derecho (RH)"
+                    data_set.append({
+                        "Parte": parte['Parte'],
+                        "Lado": lado,
+                        "Inventario": int(parte['Inventario']),
+                        "Objetivo": int(parte['Objetivo']),
+                        "Faltante": int(parte['Faltante']),
+                        "Cajas": int(parte['CajasNecesarias'])
+                    })
+                
+                # Convertir a DataFrame para mostrar como tabla
+                df_set = pd.DataFrame(data_set)
+                st.table(df_set)
+                
+                # Calcular tiempo total (usar el máximo)
+                tiempo_max = partes_grupo_prioritario['TiempoNecesario'].max()
+                st.metric("Tiempo total necesario (horas)", f"{tiempo_max:.2f}")
             
-            # Mostrar prioridad con un indicador visual
-            st.write(f"**Prioridad:** {int(parte_asignada['Prioridad'])}")
+            else:
+                # Si no es un par LH/RH, mostrar como antes
+                parte_asignada = partes_grupo_prioritario.iloc[0]
+                
+                # Crear columnas para mostrar la información
+                col1, col2, col3 = st.columns(3)
+                
+                # Mostrar el nombre completo del producto (sin truncar)
+                with col1:
+                    st.write("**Producto:**")
+                    st.write(f"**{parte_asignada['Parte']}**")
+                    
+                with col2:
+                    st.metric("Objetivo", f"{int(parte_asignada['Objetivo'])}")
+                    
+                with col3:
+                    st.metric("Cajas a Correr", f"{int(parte_asignada['CajasNecesarias'])}")
+                
+                # Mostrar inventario y tiempo en columnas
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Mostrar inventario con color basado en el nivel
+                    inventario = int(parte_asignada['Inventario'])
+                    objetivo = int(parte_asignada['Objetivo'])
+                    porcentaje = (inventario / objetivo * 100) if objetivo > 0 else 0
+                    
+                    if porcentaje >= 75:
+                        st.success(f"📦 **Inventario:** {inventario} piezas ({porcentaje:.1f}%)")
+                    elif porcentaje >= 35:
+                        st.warning(f"📦 **Inventario:** {inventario} piezas ({porcentaje:.1f}%)")
+                    else:
+                        st.error(f"📦 **Inventario:** {inventario} piezas ({porcentaje:.1f}%)")
+                
+                with col2:
+                    st.metric("Tiempo (horas)", f"{parte_asignada['TiempoNecesario']:.2f}")
+                
+                # Mostrar prioridad con un indicador visual
+                st.write(f"**Prioridad:** {int(parte_asignada['Prioridad'])}")
             
-            # Barra de progreso para visualizar el avance hacia el objetivo
-            progreso = min(100, (parte_asignada['Inventario'] / parte_asignada['Objetivo']) * 100)
+            # Barra de progreso para visualizar el avance hacia el objetivo para el grupo
+            inventario_promedio = partes_grupo_prioritario['Inventario'].mean()
+            objetivo_promedio = partes_grupo_prioritario['Objetivo'].mean()
+            progreso = min(100, (inventario_promedio / objetivo_promedio) * 100) if objetivo_promedio > 0 else 0
+            
+            # Definir color de la barra de progreso según el nivel
+            if progreso >= 75:
+                st.markdown("""
+                <style>
+                    .stProgress > div > div {
+                        background-color: #0c0;
+                    }
+                </style>""", unsafe_allow_html=True)
+            elif progreso >= 35:
+                st.markdown("""
+                <style>
+                    .stProgress > div > div {
+                        background-color: #fc0;
+                    }
+                </style>""", unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                <style>
+                    .stProgress > div > div {
+                        background-color: #f00;
+                    }
+                </style>""", unsafe_allow_html=True)
+                
             st.progress(progreso / 100)
         else:
             st.info("🟢 Máquina Libre")
@@ -253,7 +396,7 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     
     # Preparar la tabla para mostrar
     df_tabla = df_metricas.copy()
-    df_tabla = df_tabla.sort_values(['Maquina', 'Prioridad'], na_position='last')
+    df_tabla = df_tabla.sort_values(['Maquina', 'Prioridad', 'GrupoParte'], na_position='last')
     df_tabla = df_tabla.fillna({'Prioridad': '-'})
     
     # Formatear columnas numéricas
@@ -265,7 +408,7 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     
     # Columnas a mostrar
     columnas_mostrar = [
-        'Parte', 'Maquina', 'Inventario', 'Objetivo', 
+        'Parte', 'GrupoParte', 'Maquina', 'Inventario', 'Objetivo', 
         'Faltante', 'StdPack', 'CajasNecesarias', 
         'Rate', 'TiempoNecesario', 'Prioridad'
     ]
@@ -276,6 +419,47 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
         use_container_width=True,
         hide_index=True
     )
+    
+    # Mostrar también la vista de sets
+    st.subheader("📋 Vista por Sets")
+    
+    # Botón para alternar la vista agrupada
+    show_grouped = st.checkbox("Mostrar agrupado por sets", value=True)
+    
+    if show_grouped:
+        # Agrupar por GrupoParte y Máquina
+        df_grouped = df_tabla.groupby(['GrupoParte', 'Maquina']).agg({
+            'Inventario': 'mean',
+            'Objetivo': 'mean',
+            'Faltante': 'sum',
+            'CajasNecesarias': 'sum',
+            'TiempoNecesario': 'max',
+            'Prioridad': 'min'
+        }).reset_index()
+        
+        # Formatear columnas numéricas
+        df_grouped['Inventario'] = df_grouped['Inventario'].astype(int)
+        df_grouped['Objetivo'] = df_grouped['Objetivo'].astype(int)
+        df_grouped['Faltante'] = df_grouped['Faltante'].astype(int)
+        df_grouped['CajasNecesarias'] = df_grouped['CajasNecesarias'].astype(int)
+        df_grouped['TiempoNecesario'] = df_grouped['TiempoNecesario'].round(2)
+        
+        # Ordenar por prioridad
+        df_grouped = df_grouped.sort_values(['Maquina', 'Prioridad'], na_position='last')
+        df_grouped = df_grouped.fillna({'Prioridad': '-'})
+        
+        # Columnas a mostrar
+        columnas_grouped = [
+            'GrupoParte', 'Maquina', 'Inventario', 'Objetivo', 
+            'Faltante', 'CajasNecesarias', 'TiempoNecesario', 'Prioridad'
+        ]
+        
+        # Mostrar la tabla agrupada
+        st.dataframe(
+            df_grouped[columnas_grouped], 
+            use_container_width=True,
+            hide_index=True
+        )
     
     # Información sobre el último cálculo
     st.caption("La prioridad se calcula según el tiempo necesario para alcanzar el objetivo.")
