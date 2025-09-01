@@ -3,26 +3,49 @@ import pandas as pd
 import math
 import os
 
-# Configuración de la página
-st.set_page_config(
-    page_title="Sistema Kanban Transfer Ford",
-    page_icon="🏭",
-    layout="wide"
-)
+try:
+    # Configuración de la página
+    st.set_page_config(
+        page_title="Sistema Kanban Transfer Ford",
+        page_icon="🏭",
+        layout="wide"
+    )
+except Exception as e:
+    st.write(f"Error en configuración: {e}")
 
 # Título principal
 st.title("🏭 Sistema Kanban Transfer Ford")
 
+# Datos de ejemplo en caso de que falle la carga del CSV
+DATOS_EJEMPLO = [
+    ["CX430 Header Front LH", 40, 978, "Transfer 7", 120],
+    ["CX430 Header Front RH", 40, 978, "Transfer 7", 120],
+    ["CX430 Header Rear LH", 56, 880, "Transfer 7", 110],
+    ["CX430 Header Rear RH", 56, 880, "Transfer 7", 110],
+    ["CX430 OB RR LH", 70, 978, "Transfer 8", 130],
+    ["CX430 OB RR RH", 70, 978, "Transfer 8", 130]
+]
+
 # Función para cargar el catálogo
-@st.cache_data
+# Usar el decorador de cache adecuado según la versión
+if hasattr(st, 'cache_data'):
+    cache_decorator = st.cache_data
+else:
+    cache_decorator = st.cache
+
+@cache_decorator
 def cargar_catalogo():
     try:
         # Intentar cargar desde la ruta relativa
         return pd.read_csv("catalogo.csv")
     except Exception as e:
-        st.error(f"Error al cargar el catálogo: {e}")
-        # Crear un DataFrame vacío como fallback
-        return pd.DataFrame(columns=["Parte", "StdPack", "Objetivo", "Maquina", "Rate"])
+        st.warning(f"No se pudo cargar el archivo catalogo.csv: {e}")
+        st.info("Usando datos de ejemplo predeterminados")
+        # Usar datos de ejemplo
+        return pd.DataFrame(
+            DATOS_EJEMPLO,
+            columns=["Parte", "StdPack", "Objetivo", "Maquina", "Rate"]
+        )
 
 # Cargar catálogo
 catalogo = cargar_catalogo()
