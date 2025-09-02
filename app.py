@@ -889,26 +889,18 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
         CAPACIDAD_SEMANAL = 22.5 * 5.6  # 22.5 horas por 5.6 días
         TIEMPO_CAMBIO = 1.0  # 1 hora por cambio de producto
         
-        # Extraer solo números de las máquinas
-        numeros_transfer = [m.split()[1] if len(m.split()) > 1 else m for m in maquinas]
-        
-        # Crear selector de máquina
-        indice_maquina = st.selectbox(
-            "Seleccionar número de transfer para planear producción",
-            range(len(numeros_transfer)),
-            format_func=lambda i: numeros_transfer[i],
-            key="maquina_capacidad"
-        )
-        
-        # Obtener la máquina seleccionada
-        maquina_cap = maquinas[indice_maquina]
-        
         st.info("Esta es una herramienta de simulación para planificar la producción semanal. Los valores ingresados no afectarán el inventario real.")
         
-        # Filtrar datos para la máquina seleccionada
-        df_maquina_cap = df_metricas[df_metricas['Maquina'] == maquina_cap].copy()
+        # Extraer números de las máquinas para referencias
+        numeros_transfer = [m.split()[1] if len(m.split()) > 1 else m for m in maquinas]
         
-        # Obtener grupos de partes únicos para esta máquina
+        # Usar todas las máquinas en lugar de seleccionar una
+        st.write("### Plan de producción para todas las transfers")
+        
+        # Obtener grupos de partes para todas las máquinas
+        df_maquina_cap = df_metricas.copy()
+        
+        # Obtener grupos de partes únicos
         grupos_unicos = sorted(df_maquina_cap['GrupoParte'].unique())
         
         # Crear un DataFrame para la simulación
@@ -925,8 +917,12 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
             df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Objetivo'] = partes_grupo['Objetivo'].mean()
             df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Faltante'] = partes_grupo['Faltante'].mean()
             df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Prioridad'] = partes_grupo['Prioridad'].iloc[0]
+            df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Maquina'] = partes_grupo['Maquina'].iloc[0]
             
-        # Formulario para el plan de producción
+            # Extraer solo el número de transfer para visualización más limpia
+            maquina_txt = partes_grupo['Maquina'].iloc[0]
+            num_transfer = maquina_txt.split()[1] if len(maquina_txt.split()) > 1 else maquina_txt
+            df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'NumTransfer'] = num_transfer        # Formulario para el plan de producción
         with st.form("plan_semanal_form"):
             st.write("Configuración del plan de producción:")
             
@@ -965,39 +961,48 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
                 # Crear un diccionario para almacenar los valores manuales
                 cantidades_manuales = {}
                 
-                # Organizar los grupos en columnas para mejor visualización
-                cols_por_fila = 2
-                for i in range(0, len(grupos_unicos), cols_por_fila):
-                    cols = st.columns(cols_por_fila)
-                    for j in range(cols_por_fila):
-                        idx = i + j
-                        if idx < len(grupos_unicos):
-                            grupo = grupos_unicos[idx]
-                            std_pack = int(df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'StdPack'].iloc[0])
-                            rate = int(df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Rate'].iloc[0])
-                            
-                            # Encontrar el inventario actual y objetivo para este grupo
-                            partes_grupo = df_maquina_cap[df_maquina_cap['GrupoParte'] == grupo]
-                            inventario_actual = partes_grupo['Inventario'].mean()
-                            objetivo = partes_grupo['Objetivo'].mean()
-                            faltante = partes_grupo['Faltante'].mean()
-                            
-                            with cols[j]:
-                                # Mostrar información del grupo
-                                st.write(f"**{grupo}**")
-                                st.caption(f"Inventario: {int(inventario_actual)}, Objetivo: {int(objetivo)}, Faltante: {int(faltante)}")
-                                st.caption(f"StdPack: {std_pack}, Rate: {rate}/hr")
+                # Agrupar por transfer para mejor organización
+                transfers_unicos = sorted(df_simulacion['NumTransfer'].unique())
+                
+                for transfer in transfers_unicos:
+                    st.write(f"### Transfer {transfer}")
+                    
+                    # Filtrar grupos para esta transfer
+                    grupos_transfer = df_simulacion[df_simulacion['NumTransfer'] == transfer]['GrupoParte'].tolist()
+                    
+                    # Organizar los grupos en columnas para mejor visualización
+                    cols_por_fila = 2
+                    for i in range(0, len(grupos_transfer), cols_por_fila):
+                        cols = st.columns(cols_por_fila)
+                        for j in range(cols_por_fila):
+                            idx = i + j
+                            if idx < len(grupos_transfer):
+                                grupo = grupos_transfer[idx]
+                                std_pack = int(df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'StdPack'].iloc[0])
+                                rate = int(df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Rate'].iloc[0])
                                 
-                                # Input para la cantidad a producir
-                                cantidad = st.number_input(
-                                    "Sets a producir",
-                                    min_value=0,
-                                    value=int(faltante) if faltante > 0 else 0,
-                                    step=std_pack,
-                                    key=f"plan_manual_{grupo}"
-                                )
+                                # Obtener información del grupo
+                                row = df_simulacion.loc[df_simulacion['GrupoParte'] == grupo].iloc[0]
+                                inventario_actual = row['Inventario']
+                                objetivo = row['Objetivo']
+                                faltante = row['Faltante']
                                 
-                                cantidades_manuales[grupo] = cantidad
+                                with cols[j]:
+                                    # Mostrar información del grupo
+                                    st.write(f"**{grupo}**")
+                                    st.caption(f"Inventario: {int(inventario_actual)}, Objetivo: {int(objetivo)}, Faltante: {int(faltante)}")
+                                    st.caption(f"StdPack: {std_pack}, Rate: {rate}/hr")
+                                    
+                                    # Input para la cantidad a producir
+                                    cantidad = st.number_input(
+                                        "Sets a producir",
+                                        min_value=0,
+                                        value=int(faltante) if faltante > 0 else 0,
+                                        step=std_pack,
+                                        key=f"plan_manual_{grupo}"
+                                    )
+                                    
+                                    cantidades_manuales[grupo] = cantidad
             
             # Botón para generar el plan
             if modo_plan == "Plan automático":
@@ -1193,30 +1198,56 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
             # Mostrar tabla de partes a producir
             st.subheader("Detalle del Plan de Producción")
             
-            # Mostrar el dataframe con formato
-            df_mostrar = df_simulacion_filtrado[['GrupoParte', 'Cantidad', 'Tiempo Produccion', 'Tiempo Cambio', 'Tiempo Total']].copy()
-            df_mostrar.columns = ['Grupo de Parte', 'Cantidad (sets)', 'Tiempo Producción (hrs)', 'Tiempo Cambio (hrs)', 'Tiempo Total (hrs)']
+            # Mostrar el dataframe con formato incluyendo máquina
+            df_mostrar = df_simulacion_filtrado[['NumTransfer', 'GrupoParte', 'Cantidad', 'Tiempo Produccion', 'Tiempo Cambio', 'Tiempo Total']].copy()
+            df_mostrar.columns = ['Transfer', 'Grupo de Parte', 'Cantidad (sets)', 'Tiempo Producción (hrs)', 'Tiempo Cambio (hrs)', 'Tiempo Total (hrs)']
             
             # Formatear columnas numéricas
             df_mostrar['Tiempo Producción (hrs)'] = df_mostrar['Tiempo Producción (hrs)'].round(2)
             df_mostrar['Tiempo Cambio (hrs)'] = df_mostrar['Tiempo Cambio (hrs)'].round(2)
             df_mostrar['Tiempo Total (hrs)'] = df_mostrar['Tiempo Total (hrs)'].round(2)
             
-            # Calcular total de sets
+            # Calcular totales
             total_sets = df_mostrar['Cantidad (sets)'].sum()
             
-            # Mostrar el dataframe
-            st.dataframe(df_mostrar, hide_index=True)
+            # Agrupar por transfer para mostrar resumen
+            transfers_unicos = sorted(df_mostrar['Transfer'].unique())
             
-            # Si es un plan manual, mostrar el total de sets
-            if 'modo_plan' in st.session_state and st.session_state.modo_plan == "Plan manual (ingresar cantidades)":
-                st.info(f"Total de sets a producir: **{total_sets}** sets")
+            for transfer in transfers_unicos:
+                st.write(f"### Resumen Transfer {transfer}")
                 
-                # Mostrar la cantidad por grupo en formato más legible
+                # Filtrar por transfer
+                df_transfer = df_mostrar[df_mostrar['Transfer'] == transfer]
+                
+                # Mostrar el dataframe filtrado por transfer
+                st.dataframe(df_transfer, hide_index=True)
+                
+                # Mostrar totales para este transfer
+                sets_transfer = df_transfer['Cantidad (sets)'].sum()
+                tiempo_transfer = df_transfer['Tiempo Total (hrs)'].sum()
+                st.info(f"Transfer {transfer}: **{sets_transfer}** sets - Tiempo total: **{tiempo_transfer:.2f}** hrs")
+            
+            # Mostrar el resumen general
+            st.subheader("Resumen General")
+            st.info(f"Total de sets a producir en todas las transfers: **{total_sets}** sets")
+            
+            # Mostrar totales agrupados por transfer
+            totales_transfer = df_mostrar.groupby('Transfer').agg({
+                'Cantidad (sets)': 'sum',
+                'Tiempo Total (hrs)': 'sum'
+            }).reset_index()
+            
+            st.dataframe(totales_transfer, hide_index=True)
+            
+            # Si es un plan manual, mostrar resumen adicional
+            if 'modo_plan' in st.session_state and st.session_state.modo_plan == "Plan manual (ingresar cantidades)":
+                # Mostrar la cantidad por grupo en formato más legible por transfer
                 if len(df_mostrar) > 0:
-                    st.write("### Resumen de cantidades por grupo:")
-                    resumen_texto = ", ".join([f"{row['Grupo de Parte']}: {row['Cantidad (sets)']} sets" for _, row in df_mostrar.iterrows()])
-                    st.write(resumen_texto)
+                    st.write("### Resumen de cantidades por transfer:")
+                    for transfer in transfers_unicos:
+                        df_transfer = df_mostrar[df_mostrar['Transfer'] == transfer]
+                        resumen_texto = ", ".join([f"{row['Grupo de Parte']}: {row['Cantidad (sets)']} sets" for _, row in df_transfer.iterrows()])
+                        st.write(f"**Transfer {transfer}:** {resumen_texto}")
         else:
             st.info("Complete el formulario y haga clic en 'Calcular Plan de Producción' para ver los resultados.")
         
@@ -1259,15 +1290,23 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
                 ascending=True
             ).copy()
             
-            # Variables para seguimiento
-            tiempo_actual = 0
-            dia_actual = 0
-            turno_actual = 0
+            # Procesar cada transfer por separado
+            transfers_unicos = sorted(productos_asignados['NumTransfer'].unique())
             
-            # Recorrer cada producto para distribuirlo en el calendario
-            for idx, producto in productos_asignados.iterrows():
-                tiempo_producto = producto['Tiempo Total']  # Incluye tiempo de cambio
-                tiempo_restante = tiempo_producto
+            # Para cada transfer, crear su propio calendario
+            for transfer in transfers_unicos:
+                # Filtrar productos para esta transfer
+                productos_transfer = productos_asignados[productos_asignados['NumTransfer'] == transfer].copy()
+                
+                # Variables para seguimiento (reiniciadas para cada transfer)
+                tiempo_actual = 0
+                dia_actual = 0
+                turno_actual = 0
+                
+                # Recorrer cada producto para distribuirlo en el calendario
+                for idx, producto in productos_transfer.iterrows():
+                    tiempo_producto = producto['Tiempo Total']  # Incluye tiempo de cambio
+                    tiempo_restante = tiempo_producto
                 
                 while tiempo_restante > 0 and dia_actual < len(dias):
                     # Calcular cuánto tiempo se puede asignar en el turno actual
@@ -1286,12 +1325,13 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
                     
                     tiempo_asignado = min(tiempo_restante, tiempo_disponible_turno)
                     
-                    # Añadir entrada al calendario
+                    # Añadir entrada al calendario con información de transfer
                     datos_produccion.append({
                         'Dia': dias[dia_actual],
                         'Turno': turnos[turno_actual],
                         'Horas': tiempo_asignado,
                         'Producto': producto['GrupoParte'],
+                        'Transfer': f"Transfer {transfer}",
                         'Utilizacion': (tiempo_asignado / horas_turno_actual) * 100
                     })
                     
@@ -1320,58 +1360,84 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
                     else:
                         tipo_plan_texto = f"Plan Automático ({tipo_plan})" if 'tipo_plan' in locals() else "Plan Automático"
                 
-                fig = px.bar(
-                    df_produccion,
-                    x='Dia',
-                    y='Horas',
-                    color='Producto',
-                    facet_row='Turno',
-                    title=f'Distribución de la Producción - Transfer {numeros_transfer[indice_maquina]} - {tipo_plan_texto}',
-                    labels={'Horas': 'Horas Utilizadas'},
-                    category_orders={"Dia": dias, "Turno": turnos},
-                    color_discrete_sequence=px.colors.qualitative.Bold
-                )
+                # Crear un gráfico para cada transfer
+                for transfer in sorted(df_produccion['Transfer'].unique()):
+                    st.write(f"### {transfer}")
+                    
+                    # Filtrar datos para esta transfer
+                    df_transfer = df_produccion[df_produccion['Transfer'] == transfer]
+                    
+                    # Crear gráfico de barras para esta transfer
+                    fig = px.bar(
+                        df_transfer,
+                        x='Dia',
+                        y='Horas',
+                        color='Producto',
+                        facet_row='Turno',
+                        title=f'Distribución de la Producción - {transfer} - {tipo_plan_texto}',
+                        labels={'Horas': 'Horas Utilizadas'},
+                        category_orders={"Dia": dias, "Turno": turnos},
+                        color_discrete_sequence=px.colors.qualitative.Bold
+                    )
+                    
+                    # Configurar layout
+                    fig.update_layout(
+                        height=min(600, 200 * len(turnos)),  # Altura ajustada según número de turnos
+                        legend_title='Producto',
+                    )
+                    
+                    # Añadir línea de referencia para las horas máximas por turno
+                    for i, horas_max in enumerate(horas_por_turno):
+                        if i < len(turnos):  # Verificar que no nos pasemos del índice máximo
+                            fig.add_shape(
+                                type="line",
+                                x0=-0.5,
+                                y0=horas_max,
+                                x1=len(dias)-0.5,
+                                y1=horas_max,
+                                line=dict(color="red", width=2, dash="dot"),
+                                row=i+1,
+                                col=1
+                            )
+                    
+                    # Mostrar el gráfico
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Mostrar tabla de distribución por día y turno para esta transfer
+                    pivot_horas = pd.pivot_table(
+                        df_transfer,
+                        values='Horas',
+                        index='Turno',
+                        columns='Dia',
+                        fill_value=0,
+                        aggfunc='sum'
+                    ).reset_index()
+                    
+                    st.write(f"#### Horas por turno - {transfer}")
+                    st.dataframe(pivot_horas, hide_index=True)
+                    
+                    # Mostrar tabla de distribución por producto, día y turno
+                    st.write(f"#### Producción detallada - {transfer}")
+                    st.dataframe(
+                        df_transfer[['Dia', 'Turno', 'Producto', 'Horas']].sort_values(['Dia', 'Turno']),
+                        hide_index=True
+                    )
                 
-                fig.update_layout(
-                    height=min(600, 200 * len(turnos)),  # Altura ajustada según número de turnos
-                    legend_title='Producto',
-                )
+                # Mostrar un resumen general de todas las transfers juntas
+                st.subheader("Resumen General - Todas las Transfers")
                 
-                # Añadir línea de referencia para las horas máximas por turno
-                for i, horas_max in enumerate(horas_por_turno):
-                    if i < len(turnos):  # Verificar que no nos pasemos del índice máximo
-                        fig.add_shape(
-                            type="line",
-                            x0=-0.5,
-                            y0=horas_max,
-                            x1=len(dias)-0.5,
-                            y1=horas_max,
-                            line=dict(color="red", width=2, dash="dot"),
-                            row=i+1,
-                            col=1
-                        )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Mostrar tabla de distribución por día y turno
-                pivot_horas = pd.pivot_table(
+                # Mostrar tabla de distribución total por transfer
+                pivot_total = pd.pivot_table(
                     df_produccion,
                     values='Horas',
-                    index='Turno',
+                    index='Transfer',
                     columns='Dia',
                     fill_value=0,
                     aggfunc='sum'
                 ).reset_index()
                 
-                st.write("### Horas por turno")
-                st.dataframe(pivot_horas, hide_index=True)
-                
-                # Mostrar tabla de distribución por producto, día y turno
-                st.write("### Producción detallada")
-                st.dataframe(
-                    df_produccion[['Dia', 'Turno', 'Producto', 'Horas']].sort_values(['Dia', 'Turno']),
-                    hide_index=True
-                )
+                st.write("### Horas totales por transfer y día")
+                st.dataframe(pivot_total, hide_index=True)
         
         # Sugerir optimizaciones si es necesario
         if 'cantidades_plan' in st.session_state and porcentaje_utilizacion > 100:
