@@ -7,6 +7,8 @@ import hashlib
 import json
 import datetime
 from functools import lru_cache
+import plotly.express as px
+import plotly.graph_objects as go
 
 try:
     # Configuración de la página
@@ -633,52 +635,34 @@ elif st.session_state.page == 'update_inventory':
         
         # Obtener todas las partes y ordenarlas alfabéticamente
         partes_unicas = sorted(catalogo['Parte'].unique())
-        
-        # Crear un campo de búsqueda para filtrar partes
-        search_term = st.text_input("Buscar parte:", key="search_parte", 
-                                   help="Filtra partes por nombre (ej. 'CX430', 'LH', 'U725', etc.)")
-        
-        # Filtrar las partes por término de búsqueda si se ha ingresado uno
-        if search_term:
-            partes_filtradas = [p for p in partes_unicas if search_term.lower() in p.lower()]
-        else:
-            partes_filtradas = partes_unicas
             
         # Crear columnas para mostrar las partes
         container = st.container()
         
-        # Información sobre el número de partes mostradas
-        if search_term:
-            container.caption(f"Mostrando {len(partes_filtradas)} de {len(partes_unicas)} partes")
-        
         # Dividir las partes en dos columnas para mejor visualización
-        mitad = len(partes_filtradas) // 2
+        mitad = len(partes_unicas) // 2
         
         # Primera columna
         with col1:
-            for parte in partes_filtradas[:mitad]:
-                # Opcional: Agregar la máquina como información
-                maquina = catalogo[catalogo['Parte'] == parte]['Maquina'].iloc[0]
+            for parte in partes_unicas[:mitad]:
                 st.session_state.temp_inventario[parte] = st.number_input(
-                    f"{parte} ({maquina})", 
+                    f"{parte}", 
                     min_value=0, 
                     value=st.session_state.inventario[parte],
                     key=f"inv_{parte}",
                     help=f"Estándar: {catalogo[catalogo['Parte'] == parte]['StdPack'].iloc[0]}, Objetivo: {catalogo[catalogo['Parte'] == parte]['Objetivo'].iloc[0]}"
                 )
             
-            # Segunda columna
-            with col2:
-                for parte in partes_filtradas[mitad:]:
-                    # Obtener la máquina para esta parte como información adicional
-                    maquina = catalogo[catalogo['Parte'] == parte]['Maquina'].iloc[0]
-                    st.session_state.temp_inventario[parte] = st.number_input(
-                        f"{parte} ({maquina})", 
-                        min_value=0, 
-                        value=st.session_state.inventario[parte],
-                        key=f"inv2_{parte}",
-                        help=f"Estándar: {catalogo[catalogo['Parte'] == parte]['StdPack'].iloc[0]}, Objetivo: {catalogo[catalogo['Parte'] == parte]['Objetivo'].iloc[0]}"
-                    )        # Campos para registrar usuario que realiza el cambio
+        # Segunda columna
+        with col2:
+            for parte in partes_unicas[mitad:]:
+                st.session_state.temp_inventario[parte] = st.number_input(
+                    f"{parte}", 
+                    min_value=0, 
+                    value=st.session_state.inventario[parte],
+                    key=f"inv2_{parte}",
+                    help=f"Estándar: {catalogo[catalogo['Parte'] == parte]['StdPack'].iloc[0]}, Objetivo: {catalogo[catalogo['Parte'] == parte]['Objetivo'].iloc[0]}"
+                )        # Campos para registrar usuario que realiza el cambio
         if 'ultimo_usuario' not in st.session_state:
             st.session_state.ultimo_usuario = ""
             
@@ -745,7 +729,7 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     st.header("🔐 Panel de Administrador")
     
     # Crear pestañas para diferentes secciones del panel de administrador
-    tab1, tab2, tab3 = st.tabs(["📋 Tabla General", "⏱ Capacidad de Máquina", "📝 Registro de Cambios"])
+    tab1, tab2, tab3 = st.tabs(["📋 Tabla General", "📅 Plan Semanal de Producción", "📝 Registro de Cambios"])
     
     with tab1:
         # Tabla completa con todos los cálculos
@@ -898,115 +882,436 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     st.caption("La prioridad se calcula según el tiempo necesario para alcanzar el objetivo.")
     
     with tab2:
-        # Pestaña de capacidad de máquina
-        st.subheader("⏱ Análisis de Capacidad de Máquina")
+        # Pestaña de plan semanal de producción
+        st.subheader("📅 Simulación de Plan Semanal de Producción")
         
         # Definir la capacidad disponible por máquina
         CAPACIDAD_SEMANAL = 22.5 * 5.6  # 22.5 horas por 5.6 días
         TIEMPO_CAMBIO = 1.0  # 1 hora por cambio de producto
         
+        # Extraer solo números de las máquinas
+        numeros_transfer = [m.split()[1] if len(m.split()) > 1 else m for m in maquinas]
+        
         # Crear selector de máquina
-        maquina_cap = st.selectbox(
-            "Seleccionar máquina para análisis de capacidad",
-            maquinas,
+        indice_maquina = st.selectbox(
+            "Seleccionar número de transfer para planear producción",
+            range(len(numeros_transfer)),
+            format_func=lambda i: numeros_transfer[i],
             key="maquina_capacidad"
         )
+        
+        # Obtener la máquina seleccionada
+        maquina_cap = maquinas[indice_maquina]
+        
+        st.info("Esta es una herramienta de simulación para planificar la producción semanal. Los valores ingresados no afectarán el inventario real.")
         
         # Filtrar datos para la máquina seleccionada
         df_maquina_cap = df_metricas[df_metricas['Maquina'] == maquina_cap].copy()
         
-        # Calcular grupos de producto (cada grupo requiere un cambio)
-        grupos_unicos = df_maquina_cap['GrupoParte'].nunique()
-        tiempo_cambios = grupos_unicos * TIEMPO_CAMBIO
+        # Obtener grupos de partes únicos para esta máquina
+        grupos_unicos = sorted(df_maquina_cap['GrupoParte'].unique())
         
-        # Calcular tiempo total necesario para la producción
-        tiempo_total_produccion = df_maquina_cap['TiempoNecesario'].sum()
+        # Crear un DataFrame para la simulación
+        df_simulacion = pd.DataFrame({
+            'GrupoParte': grupos_unicos
+        })
         
-        # Calcular tiempo total incluyendo cambios
-        tiempo_total = tiempo_total_produccion + tiempo_cambios
+        # Añadir información de cada grupo
+        for grupo in grupos_unicos:
+            partes_grupo = df_maquina_cap[df_maquina_cap['GrupoParte'] == grupo]
+            df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'StdPack'] = partes_grupo['StdPack'].iloc[0]
+            df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Rate'] = partes_grupo['Rate'].iloc[0]
+            df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Inventario'] = partes_grupo['Inventario'].mean()
+            df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Objetivo'] = partes_grupo['Objetivo'].mean()
+            df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Faltante'] = partes_grupo['Faltante'].mean()
+            df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Prioridad'] = partes_grupo['Prioridad'].iloc[0]
+            
+        # Generar plan automáticamente basado en lógica de prioridades
+        with st.form("plan_semanal_form"):
+            st.write("Configuración del plan de producción:")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                tipo_plan = st.radio(
+                    "Tipo de plan a generar:",
+                    ["Basado en faltantes", "Basado en prioridad", "Producción mínima para todos"],
+                    index=0
+                )
+                
+            with col2:
+                dias_produccion = st.slider("Días de producción", 1, 5, 5)
+                horas_por_dia = st.number_input("Horas efectivas por día", min_value=1.0, max_value=24.0, value=22.5)
+            
+            # Calcular capacidad disponible
+            capacidad_disponible = dias_produccion * horas_por_dia
+            
+            # Generar plan automáticamente al enviar el formulario
+            submitted = st.form_submit_button("Generar Plan de Producción")
+            
+            if submitted:
+                # Inicializar diccionario para cantidades
+                cantidades_plan = {}
+                
+                # Lógica para determinar las cantidades según el tipo de plan
+                if tipo_plan == "Basado en faltantes":
+                    # Ordenar por faltante mayor a menor
+                    df_plan = df_simulacion.sort_values('Faltante', ascending=False)
+                    
+                    # Asignar producción según faltantes
+                    tiempo_asignado = 0
+                    for idx, row in df_plan.iterrows():
+                        if tiempo_asignado >= capacidad_disponible:
+                            cantidades_plan[row['GrupoParte']] = 0
+                            continue
+                            
+                        faltante = max(0, row['Faltante'])
+                        std_pack = row['StdPack']
+                        rate = row['Rate']
+                        
+                        # Calcular cantidad redondeando al std_pack más cercano
+                        cantidad_raw = faltante
+                        cantidad = int(np.ceil(cantidad_raw / std_pack) * std_pack)
+                        
+                        # Calcular tiempo necesario
+                        tiempo_necesario = cantidad / rate
+                        
+                        # Si el tiempo excede lo disponible, ajustar
+                        if tiempo_asignado + tiempo_necesario > capacidad_disponible:
+                            tiempo_restante = capacidad_disponible - tiempo_asignado
+                            cantidad = int(np.floor(tiempo_restante * rate / std_pack) * std_pack)
+                            if cantidad <= 0:
+                                cantidad = 0
+                                
+                        cantidades_plan[row['GrupoParte']] = cantidad
+                        tiempo_asignado += cantidad / rate + (1.0 if cantidad > 0 else 0)  # Sumar tiempo de cambio si hay producción
+                
+                elif tipo_plan == "Basado en prioridad":
+                    # Convertir prioridad a numérico para ordenar correctamente
+                    df_simulacion['Prioridad_num'] = pd.to_numeric(df_simulacion['Prioridad'], errors='coerce')
+                    
+                    # Ordenar por prioridad (menor número es más prioritario)
+                    df_plan = df_simulacion.sort_values('Prioridad_num', ascending=True)
+                    
+                    # Asignar producción según prioridad
+                    tiempo_asignado = 0
+                    for idx, row in df_plan.iterrows():
+                        if tiempo_asignado >= capacidad_disponible:
+                            cantidades_plan[row['GrupoParte']] = 0
+                            continue
+                            
+                        faltante = max(0, row['Faltante'])
+                        std_pack = row['StdPack']
+                        rate = row['Rate']
+                        
+                        # Calcular cantidad redondeando al std_pack más cercano
+                        cantidad_raw = faltante
+                        cantidad = int(np.ceil(cantidad_raw / std_pack) * std_pack)
+                        
+                        # Calcular tiempo necesario
+                        tiempo_necesario = cantidad / rate
+                        
+                        # Si el tiempo excede lo disponible, ajustar
+                        if tiempo_asignado + tiempo_necesario > capacidad_disponible:
+                            tiempo_restante = capacidad_disponible - tiempo_asignado
+                            cantidad = int(np.floor(tiempo_restante * rate / std_pack) * std_pack)
+                            if cantidad <= 0:
+                                cantidad = 0
+                                
+                        cantidades_plan[row['GrupoParte']] = cantidad
+                        tiempo_asignado += cantidad / rate + (1.0 if cantidad > 0 else 0)  # Sumar tiempo de cambio si hay producción
+                
+                else:  # Producción mínima para todos
+                    # Priorizar productos con faltante
+                    df_con_faltante = df_simulacion[df_simulacion['Faltante'] > 0].copy()
+                    
+                    if not df_con_faltante.empty:
+                        # Calcular producción proporcional
+                        tiempo_total_requerido = sum([f / r + 1.0 for f, r in zip(df_con_faltante['Faltante'], df_con_faltante['Rate'])])
+                        factor_ajuste = min(1.0, capacidad_disponible / tiempo_total_requerido if tiempo_total_requerido > 0 else 1.0)
+                        
+                        for idx, row in df_con_faltante.iterrows():
+                            faltante = max(0, row['Faltante'])
+                            std_pack = row['StdPack']
+                            rate = row['Rate']
+                            
+                            # Calcular producción proporcional
+                            cantidad_raw = faltante * factor_ajuste
+                            cantidad = int(np.ceil(cantidad_raw / std_pack) * std_pack)
+                            
+                            cantidades_plan[row['GrupoParte']] = cantidad
+                            
+                        # Para productos sin faltante, asignar 0
+                        for grupo in grupos_unicos:
+                            if grupo not in cantidades_plan:
+                                cantidades_plan[grupo] = 0
+                    else:
+                        # Si no hay faltantes, asignar una cantidad mínima a todos
+                        tiempo_por_grupo = capacidad_disponible / len(grupos_unicos)
+                        
+                        for grupo in grupos_unicos:
+                            std_pack = df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'StdPack'].iloc[0]
+                            rate = df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Rate'].iloc[0]
+                            
+                            # Calcular cantidad según tiempo disponible
+                            cantidad_raw = tiempo_por_grupo * rate
+                            cantidad = int(np.floor(cantidad_raw / std_pack) * std_pack)
+                            
+                            cantidades_plan[grupo] = cantidad
+                
+                # Guardar el plan en la sesión
+                st.session_state.cantidades_plan = cantidades_plan
+                st.session_state.capacidad_disponible = capacidad_disponible
+        
+        if submitted or 'cantidades_plan' in st.session_state:
+            # Guardar los valores en session_state para mantenerlos después de la sumisión
+            if submitted:
+                st.session_state.cantidades_plan = cantidades_plan
+            else:
+                cantidades_plan = st.session_state.cantidades_plan
+            
+            # Añadir cantidades al DataFrame
+            for grupo, cantidad in cantidades_plan.items():
+                df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Cantidad'] = cantidad
+            
+            # Calcular tiempos
+            df_simulacion['Tiempo Produccion'] = df_simulacion['Cantidad'] / df_simulacion['Rate']
+            
+            # Filtrar solo grupos con producción planeada
+            df_simulacion_filtrado = df_simulacion[df_simulacion['Cantidad'] > 0].copy()
+            
+            # Calcular grupos de producto (cada grupo requiere un cambio)
+            grupos_a_producir = len(df_simulacion_filtrado)
+            tiempo_cambios = grupos_a_producir * TIEMPO_CAMBIO
+            
+            # Añadir tiempo de cambio a cada grupo
+            df_simulacion_filtrado['Tiempo Cambio'] = TIEMPO_CAMBIO
+            df_simulacion_filtrado['Tiempo Total'] = df_simulacion_filtrado['Tiempo Produccion'] + df_simulacion_filtrado['Tiempo Cambio']
+            
+            # Calcular tiempo total necesario para la producción
+            tiempo_total_produccion = df_simulacion_filtrado['Tiempo Produccion'].sum()
+            
+            # Calcular tiempo total incluyendo cambios
+            tiempo_total = tiempo_total_produccion + tiempo_cambios
         
         # Mostrar resultados
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Capacidad Semanal", f"{CAPACIDAD_SEMANAL:.1f} hrs")
-        with col2:
-            st.metric("Tiempo de Producción", f"{tiempo_total_produccion:.1f} hrs")
-        with col3:
-            st.metric("Tiempo de Cambios", f"{tiempo_cambios:.1f} hrs ({grupos_unicos} cambios)")
-        
-        # Calcular porcentaje de utilización
-        porcentaje_utilizacion = (tiempo_total / CAPACIDAD_SEMANAL) * 100
-        
-        # Mostrar gráfico de utilización
-        st.subheader("Utilización de Capacidad")
-        
-        # Determinar color según utilización
-        if porcentaje_utilizacion > 100:
-            color_barra = "red"
-            mensaje = "⚠️ **SOBRECAPACIDAD**: La máquina no tiene suficiente tiempo para completar toda la producción"
-        elif porcentaje_utilizacion > 85:
-            color_barra = "orange"
-            mensaje = "⚠️ **ATENCIÓN**: La máquina está operando cerca de su capacidad máxima"
+        if 'cantidades_plan' in st.session_state:
+            # Usar capacidad personalizada si está definida
+            capacidad_usar = st.session_state.capacidad_disponible if 'capacidad_disponible' in st.session_state else CAPACIDAD_SEMANAL
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Capacidad Disponible", f"{capacidad_usar:.1f} hrs")
+            with col2:
+                st.metric("Tiempo de Producción", f"{tiempo_total_produccion:.1f} hrs")
+            with col3:
+                st.metric("Tiempo de Cambios", f"{tiempo_cambios:.1f} hrs ({grupos_a_producir} cambios)")
+            
+            # Calcular porcentaje de utilización
+            porcentaje_utilizacion = (tiempo_total / capacidad_usar) * 100
+            
+            # Mostrar gráfico de utilización
+            st.subheader("Utilización de Capacidad")
+            
+            # Determinar color según utilización
+            if porcentaje_utilizacion > 100:
+                color_barra = "red"
+                mensaje = "⚠️ **SOBRECAPACIDAD**: La máquina no tiene suficiente tiempo para completar toda la producción"
+            elif porcentaje_utilizacion > 85:
+                color_barra = "orange"
+                mensaje = "⚠️ **ATENCIÓN**: La máquina está operando cerca de su capacidad máxima"
+            else:
+                color_barra = "green"
+                mensaje = "✅ **CAPACIDAD SUFICIENTE**: La máquina tiene capacidad para la producción actual"
+            
+            # Mostrar barra de progreso personalizada
+            st.progress(min(porcentaje_utilizacion / 100, 1.0), text=f"Utilización: {porcentaje_utilizacion:.1f}%")
+            st.markdown(mensaje)
+            
+            # Mostrar tabla de partes a producir
+            st.subheader("Detalle del Plan de Producción")
+            
+            # Mostrar el dataframe con formato
+            df_mostrar = df_simulacion_filtrado[['GrupoParte', 'Cantidad', 'Tiempo Produccion', 'Tiempo Cambio', 'Tiempo Total']].copy()
+            df_mostrar.columns = ['Grupo de Parte', 'Cantidad', 'Tiempo Producción (hrs)', 'Tiempo Cambio (hrs)', 'Tiempo Total (hrs)']
+            
+            # Formatear columnas numéricas
+            df_mostrar['Tiempo Producción (hrs)'] = df_mostrar['Tiempo Producción (hrs)'].round(2)
+            df_mostrar['Tiempo Cambio (hrs)'] = df_mostrar['Tiempo Cambio (hrs)'].round(2)
+            df_mostrar['Tiempo Total (hrs)'] = df_mostrar['Tiempo Total (hrs)'].round(2)
+            
+            st.dataframe(df_mostrar, hide_index=True)
         else:
-            color_barra = "green"
-            mensaje = "✅ **CAPACIDAD SUFICIENTE**: La máquina tiene capacidad para la producción actual"
+            st.info("Complete el formulario y haga clic en 'Calcular Plan de Producción' para ver los resultados.")
         
-        # Mostrar barra de progreso personalizada
-        st.progress(min(porcentaje_utilizacion / 100, 1.0), text=f"Utilización: {porcentaje_utilizacion:.1f}%")
-        st.markdown(mensaje)
-        
-        # Tabla detallada de productos
-        st.subheader("Desglose por Producto")
-        
-        # Agrupar por GrupoParte para mostrar tiempos por grupo
-        df_grupos = df_maquina_cap.groupby('GrupoParte').agg({
-            'TiempoNecesario': 'sum',
-            'Faltante': 'sum',
-            'Parte': 'count',
-            'Prioridad': 'first'  # Tomar la primera prioridad para cada grupo
-        }).reset_index()
-        df_grupos = df_grupos.rename(columns={'Parte': 'Cantidad de Partes'})
-        
-        # Añadir columna de tiempo de cambio
-        df_grupos['Tiempo de Cambio'] = TIEMPO_CAMBIO
-        df_grupos['Tiempo Total'] = df_grupos['TiempoNecesario'] + df_grupos['Tiempo de Cambio']
-        df_grupos['% de Capacidad'] = (df_grupos['Tiempo Total'] / CAPACIDAD_SEMANAL) * 100
-        
-        # Convertir prioridad a numérico para ordenar correctamente
-        df_grupos['Prioridad_num'] = pd.to_numeric(df_grupos['Prioridad'], errors='coerce')
-        
-        # Ordenar por mayor tiempo total
-        df_grupos = df_grupos.sort_values('Tiempo Total', ascending=False)
-        
-        # Preparar los datos para la tabla
-        # Formatear la prioridad para mostrarla correctamente
-        df_grupos['Prioridad_display'] = df_grupos['Prioridad'].apply(
-            lambda x: int(x) if pd.notnull(x) and str(x).replace('.', '', 1).isdigit() else '-'
-        )
-        
-        # Mostrar la tabla
-        st.dataframe(
-            df_grupos[['GrupoParte', 'Prioridad_display', 'TiempoNecesario', 'Tiempo de Cambio', 
-                      'Tiempo Total', '% de Capacidad', 'Faltante', 'Cantidad de Partes']],
-            hide_index=True,
-            use_container_width=True
-        )
+        # Visualización del plan semanal
+        if 'cantidades_plan' in st.session_state:
+            st.subheader("Visualización del Plan Semanal")
+            
+            # Obtener los días y turnos necesarios según la configuración
+            dias_disponibles = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes']
+            dias = dias_disponibles[:st.session_state.get('dias_produccion', 5)]
+            
+            # Calcular número de turnos según las horas por día
+            horas_por_dia = st.session_state.get('horas_por_dia', 22.5)
+            turnos_completos = int(horas_por_dia // 8)
+            horas_ultimo_turno = horas_por_dia % 8
+            
+            turnos = []
+            for i in range(turnos_completos):
+                turnos.append(f"Turno {i+1}")
+                
+            if horas_ultimo_turno > 0:
+                turnos.append(f"Turno {len(turnos)+1} ({horas_ultimo_turno:.1f}h)")
+            
+            # Si no hay turnos definidos (caso extremo), crear al menos uno
+            if not turnos:
+                turnos = ["Turno 1"]
+            
+            # Horas efectivas por turno
+            horas_por_turno = [8] * turnos_completos
+            if horas_ultimo_turno > 0:
+                horas_por_turno.append(horas_ultimo_turno)
+            
+            # Datos para visualización
+            datos_produccion = []
+            
+            # Distribuir productos en el calendario según prioridad
+            productos_asignados = df_simulacion_filtrado.sort_values(
+                'Prioridad', 
+                key=lambda x: pd.to_numeric(x, errors='coerce'),
+                ascending=True
+            ).copy()
+            
+            # Variables para seguimiento
+            tiempo_actual = 0
+            dia_actual = 0
+            turno_actual = 0
+            
+            # Recorrer cada producto para distribuirlo en el calendario
+            for idx, producto in productos_asignados.iterrows():
+                tiempo_producto = producto['Tiempo Total']  # Incluye tiempo de cambio
+                tiempo_restante = tiempo_producto
+                
+                while tiempo_restante > 0 and dia_actual < len(dias):
+                    # Calcular cuánto tiempo se puede asignar en el turno actual
+                    horas_turno_actual = horas_por_turno[turno_actual]
+                    tiempo_usado_turno = tiempo_actual % horas_turno_actual
+                    tiempo_disponible_turno = horas_turno_actual - tiempo_usado_turno
+                    
+                    # No permitir tiempos negativos o cero
+                    if tiempo_disponible_turno <= 0:
+                        turno_actual += 1
+                        if turno_actual >= len(turnos):
+                            turno_actual = 0
+                            dia_actual += 1
+                        tiempo_actual = 0
+                        continue
+                    
+                    tiempo_asignado = min(tiempo_restante, tiempo_disponible_turno)
+                    
+                    # Añadir entrada al calendario
+                    datos_produccion.append({
+                        'Dia': dias[dia_actual],
+                        'Turno': turnos[turno_actual],
+                        'Horas': tiempo_asignado,
+                        'Producto': producto['GrupoParte'],
+                        'Utilizacion': (tiempo_asignado / horas_turno_actual) * 100
+                    })
+                    
+                    # Actualizar tiempos
+                    tiempo_actual += tiempo_asignado
+                    tiempo_restante -= tiempo_asignado
+                    
+                    # Pasar al siguiente turno/día si es necesario
+                    if tiempo_actual >= horas_turno_actual:
+                        tiempo_actual = 0
+                        turno_actual += 1
+                        if turno_actual >= len(turnos):
+                            turno_actual = 0
+                            dia_actual += 1
+            
+            # Convertir a dataframe
+            df_produccion = pd.DataFrame(datos_produccion)
+            
+            if not df_produccion.empty:
+                # Crear gráfico de barras apiladas
+                fig = px.bar(
+                    df_produccion,
+                    x='Dia',
+                    y='Horas',
+                    color='Producto',
+                    facet_row='Turno',
+                    title=f'Distribución de la Producción - Transfer {numeros_transfer[indice_maquina]}',
+                    labels={'Horas': 'Horas Utilizadas'},
+                    category_orders={"Dia": dias, "Turno": turnos},
+                    color_discrete_sequence=px.colors.qualitative.Bold
+                )
+                
+                fig.update_layout(
+                    height=min(600, 200 * len(turnos)),  # Altura ajustada según número de turnos
+                    legend_title='Producto',
+                )
+                
+                # Añadir línea de referencia para las horas máximas por turno
+                for i, horas_max in enumerate(horas_por_turno):
+                    if i < len(turnos):  # Verificar que no nos pasemos del índice máximo
+                        fig.add_shape(
+                            type="line",
+                            x0=-0.5,
+                            y0=horas_max,
+                            x1=len(dias)-0.5,
+                            y1=horas_max,
+                            line=dict(color="red", width=2, dash="dot"),
+                            row=i+1,
+                            col=1
+                        )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Mostrar tabla de distribución por día y turno
+                pivot_horas = pd.pivot_table(
+                    df_produccion,
+                    values='Horas',
+                    index='Turno',
+                    columns='Dia',
+                    fill_value=0,
+                    aggfunc='sum'
+                ).reset_index()
+                
+                st.write("### Horas por turno")
+                st.dataframe(pivot_horas, hide_index=True)
+                
+                # Mostrar tabla de distribución por producto, día y turno
+                st.write("### Producción detallada")
+                st.dataframe(
+                    df_produccion[['Dia', 'Turno', 'Producto', 'Horas']].sort_values(['Dia', 'Turno']),
+                    hide_index=True
+                )
         
         # Sugerir optimizaciones si es necesario
-        if porcentaje_utilizacion > 100:
+        if 'cantidades_plan' in st.session_state and porcentaje_utilizacion > 100:
             st.subheader("Sugerencias para Optimización")
-            exceso = tiempo_total - CAPACIDAD_SEMANAL
+            capacidad_usar = st.session_state.capacidad_disponible if 'capacidad_disponible' in st.session_state else CAPACIDAD_SEMANAL
+            exceso = tiempo_total - capacidad_usar
             st.write(f"Necesitas reducir aproximadamente **{exceso:.1f} horas** para estar dentro de la capacidad disponible.")
             
-            # Sugerir eliminar algunos productos de menor prioridad
-            df_candidatos = df_grupos.sort_values('Prioridad_num', ascending=False)
+            # Sugerir eliminar algunos productos según prioridad numérica
+            try:
+                # Convertir prioridad a numérico para ordenar correctamente
+                df_simulacion_filtrado['Prioridad_Num'] = pd.to_numeric(df_simulacion_filtrado['Prioridad'], errors='coerce')
+                # Ordenar por prioridad (mayor número = menor prioridad)
+                df_candidatos = df_simulacion_filtrado.sort_values('Prioridad_Num', ascending=False)
+            except:
+                # Si hay error, ordenar por tiempo total
+                df_candidatos = df_simulacion_filtrado.sort_values('Tiempo Total', ascending=False)
+                
             st.write("Considera mover estos productos a la siguiente semana:")
             
             # Encontrar combinación de productos que sumen cerca del exceso de tiempo
             tiempo_encontrado = 0
             productos_a_mover = []
             
-            for i, (_, producto) in enumerate(df_candidatos.iterrows()):
+            for i, producto in df_candidatos.iterrows():
                 if tiempo_encontrado >= exceso:
                     break
                     
@@ -1017,7 +1322,7 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
                 })
                 tiempo_encontrado += tiempo_producto
                 
-                st.write(f"- {producto['GrupoParte']}: {producto['Tiempo Total']:.1f} hrs")
+                st.write(f"- {producto['GrupoParte']}: {tiempo_producto:.1f} hrs")
                 
             st.info(f"Moviendo estos productos liberarías {tiempo_encontrado:.1f} de las {exceso:.1f} horas necesarias.")
     
