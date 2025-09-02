@@ -926,17 +926,30 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
             df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Faltante'] = partes_grupo['Faltante'].mean()
             df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Prioridad'] = partes_grupo['Prioridad'].iloc[0]
             
-        # Generar plan automáticamente basado en lógica de prioridades
+        # Formulario para el plan de producción
         with st.form("plan_semanal_form"):
             st.write("Configuración del plan de producción:")
             
+            # Opción para elegir entre plan automático o manual
+            modo_plan = st.radio(
+                "Modo de planificación:",
+                ["Plan automático", "Plan manual (ingresar cantidades)"],
+                index=0
+            )
+            
             col1, col2 = st.columns(2)
+            
+            # Configuración para ambos modos
             with col1:
-                tipo_plan = st.radio(
-                    "Tipo de plan a generar:",
-                    ["Basado en faltantes", "Basado en prioridad", "Producción mínima para todos"],
-                    index=0
-                )
+                if modo_plan == "Plan automático":
+                    tipo_plan = st.radio(
+                        "Tipo de plan a generar:",
+                        ["Basado en faltantes", "Basado en prioridad", "Producción mínima para todos"],
+                        index=0
+                    )
+                else:
+                    st.write("**Ingreso manual de cantidades**")
+                    st.caption("Las cantidades se ingresarán en sets.")
                 
             with col2:
                 dias_produccion = st.slider("Días de producción", 1, 5, 5)
@@ -945,122 +958,172 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
             # Calcular capacidad disponible
             capacidad_disponible = dias_produccion * horas_por_dia
             
-            # Generar plan automáticamente al enviar el formulario
-            submitted = st.form_submit_button("Generar Plan de Producción")
+            # Sección para ingreso manual de cantidades
+            if modo_plan == "Plan manual (ingresar cantidades)":
+                st.write("### Ingrese la cantidad de sets a producir para cada producto:")
+                
+                # Crear un diccionario para almacenar los valores manuales
+                cantidades_manuales = {}
+                
+                # Organizar los grupos en columnas para mejor visualización
+                cols_por_fila = 2
+                for i in range(0, len(grupos_unicos), cols_por_fila):
+                    cols = st.columns(cols_por_fila)
+                    for j in range(cols_por_fila):
+                        idx = i + j
+                        if idx < len(grupos_unicos):
+                            grupo = grupos_unicos[idx]
+                            std_pack = int(df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'StdPack'].iloc[0])
+                            rate = int(df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Rate'].iloc[0])
+                            
+                            # Encontrar el inventario actual y objetivo para este grupo
+                            partes_grupo = df_maquina_cap[df_maquina_cap['GrupoParte'] == grupo]
+                            inventario_actual = partes_grupo['Inventario'].mean()
+                            objetivo = partes_grupo['Objetivo'].mean()
+                            faltante = partes_grupo['Faltante'].mean()
+                            
+                            with cols[j]:
+                                # Mostrar información del grupo
+                                st.write(f"**{grupo}**")
+                                st.caption(f"Inventario: {int(inventario_actual)}, Objetivo: {int(objetivo)}, Faltante: {int(faltante)}")
+                                st.caption(f"StdPack: {std_pack}, Rate: {rate}/hr")
+                                
+                                # Input para la cantidad a producir
+                                cantidad = st.number_input(
+                                    "Sets a producir",
+                                    min_value=0,
+                                    value=int(faltante) if faltante > 0 else 0,
+                                    step=std_pack,
+                                    key=f"plan_manual_{grupo}"
+                                )
+                                
+                                cantidades_manuales[grupo] = cantidad
+            
+            # Botón para generar el plan
+            if modo_plan == "Plan automático":
+                submitted = st.form_submit_button("Generar Plan de Producción")
+            else:
+                submitted = st.form_submit_button("Calcular Plan con Cantidades Ingresadas")
             
             if submitted:
                 # Inicializar diccionario para cantidades
                 cantidades_plan = {}
                 
-                # Lógica para determinar las cantidades según el tipo de plan
-                if tipo_plan == "Basado en faltantes":
-                    # Ordenar por faltante mayor a menor
-                    df_plan = df_simulacion.sort_values('Faltante', ascending=False)
+                if modo_plan == "Plan manual (ingresar cantidades)":
+                    # Usar las cantidades ingresadas manualmente
+                    cantidades_plan = cantidades_manuales
                     
-                    # Asignar producción según faltantes
-                    tiempo_asignado = 0
-                    for idx, row in df_plan.iterrows():
-                        if tiempo_asignado >= capacidad_disponible:
-                            cantidades_plan[row['GrupoParte']] = 0
-                            continue
-                            
-                        faltante = max(0, row['Faltante'])
-                        std_pack = row['StdPack']
-                        rate = row['Rate']
+                else:  # Plan automático
+                    # Lógica para determinar las cantidades según el tipo de plan
+                    if tipo_plan == "Basado en faltantes":
+                        # Ordenar por faltante mayor a menor
+                        df_plan = df_simulacion.sort_values('Faltante', ascending=False)
                         
-                        # Calcular cantidad redondeando al std_pack más cercano
-                        cantidad_raw = faltante
-                        cantidad = int(np.ceil(cantidad_raw / std_pack) * std_pack)
-                        
-                        # Calcular tiempo necesario
-                        tiempo_necesario = cantidad / rate
-                        
-                        # Si el tiempo excede lo disponible, ajustar
-                        if tiempo_asignado + tiempo_necesario > capacidad_disponible:
-                            tiempo_restante = capacidad_disponible - tiempo_asignado
-                            cantidad = int(np.floor(tiempo_restante * rate / std_pack) * std_pack)
-                            if cantidad <= 0:
-                                cantidad = 0
+                        # Asignar producción según faltantes
+                        tiempo_asignado = 0
+                        for idx, row in df_plan.iterrows():
+                            if tiempo_asignado >= capacidad_disponible:
+                                cantidades_plan[row['GrupoParte']] = 0
+                                continue
                                 
-                        cantidades_plan[row['GrupoParte']] = cantidad
-                        tiempo_asignado += cantidad / rate + (1.0 if cantidad > 0 else 0)  # Sumar tiempo de cambio si hay producción
-                
-                elif tipo_plan == "Basado en prioridad":
-                    # Convertir prioridad a numérico para ordenar correctamente
-                    df_simulacion['Prioridad_num'] = pd.to_numeric(df_simulacion['Prioridad'], errors='coerce')
-                    
-                    # Ordenar por prioridad (menor número es más prioritario)
-                    df_plan = df_simulacion.sort_values('Prioridad_num', ascending=True)
-                    
-                    # Asignar producción según prioridad
-                    tiempo_asignado = 0
-                    for idx, row in df_plan.iterrows():
-                        if tiempo_asignado >= capacidad_disponible:
-                            cantidades_plan[row['GrupoParte']] = 0
-                            continue
-                            
-                        faltante = max(0, row['Faltante'])
-                        std_pack = row['StdPack']
-                        rate = row['Rate']
-                        
-                        # Calcular cantidad redondeando al std_pack más cercano
-                        cantidad_raw = faltante
-                        cantidad = int(np.ceil(cantidad_raw / std_pack) * std_pack)
-                        
-                        # Calcular tiempo necesario
-                        tiempo_necesario = cantidad / rate
-                        
-                        # Si el tiempo excede lo disponible, ajustar
-                        if tiempo_asignado + tiempo_necesario > capacidad_disponible:
-                            tiempo_restante = capacidad_disponible - tiempo_asignado
-                            cantidad = int(np.floor(tiempo_restante * rate / std_pack) * std_pack)
-                            if cantidad <= 0:
-                                cantidad = 0
-                                
-                        cantidades_plan[row['GrupoParte']] = cantidad
-                        tiempo_asignado += cantidad / rate + (1.0 if cantidad > 0 else 0)  # Sumar tiempo de cambio si hay producción
-                
-                else:  # Producción mínima para todos
-                    # Priorizar productos con faltante
-                    df_con_faltante = df_simulacion[df_simulacion['Faltante'] > 0].copy()
-                    
-                    if not df_con_faltante.empty:
-                        # Calcular producción proporcional
-                        tiempo_total_requerido = sum([f / r + 1.0 for f, r in zip(df_con_faltante['Faltante'], df_con_faltante['Rate'])])
-                        factor_ajuste = min(1.0, capacidad_disponible / tiempo_total_requerido if tiempo_total_requerido > 0 else 1.0)
-                        
-                        for idx, row in df_con_faltante.iterrows():
                             faltante = max(0, row['Faltante'])
                             std_pack = row['StdPack']
                             rate = row['Rate']
                             
-                            # Calcular producción proporcional
-                            cantidad_raw = faltante * factor_ajuste
+                            # Calcular cantidad redondeando al std_pack más cercano
+                            cantidad_raw = faltante
                             cantidad = int(np.ceil(cantidad_raw / std_pack) * std_pack)
                             
+                            # Calcular tiempo necesario
+                            tiempo_necesario = cantidad / rate
+                            
+                            # Si el tiempo excede lo disponible, ajustar
+                            if tiempo_asignado + tiempo_necesario > capacidad_disponible:
+                                tiempo_restante = capacidad_disponible - tiempo_asignado
+                                cantidad = int(np.floor(tiempo_restante * rate / std_pack) * std_pack)
+                                if cantidad <= 0:
+                                    cantidad = 0
+                                    
                             cantidades_plan[row['GrupoParte']] = cantidad
-                            
-                        # Para productos sin faltante, asignar 0
-                        for grupo in grupos_unicos:
-                            if grupo not in cantidades_plan:
-                                cantidades_plan[grupo] = 0
-                    else:
-                        # Si no hay faltantes, asignar una cantidad mínima a todos
-                        tiempo_por_grupo = capacidad_disponible / len(grupos_unicos)
+                            tiempo_asignado += cantidad / rate + (1.0 if cantidad > 0 else 0)  # Sumar tiempo de cambio si hay producción
+                    
+                    elif tipo_plan == "Basado en prioridad":
+                        # Convertir prioridad a numérico para ordenar correctamente
+                        df_simulacion['Prioridad_num'] = pd.to_numeric(df_simulacion['Prioridad'], errors='coerce')
                         
-                        for grupo in grupos_unicos:
-                            std_pack = df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'StdPack'].iloc[0]
-                            rate = df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Rate'].iloc[0]
+                        # Ordenar por prioridad (menor número es más prioritario)
+                        df_plan = df_simulacion.sort_values('Prioridad_num', ascending=True)
+                        
+                        # Asignar producción según prioridad
+                        tiempo_asignado = 0
+                        for idx, row in df_plan.iterrows():
+                            if tiempo_asignado >= capacidad_disponible:
+                                cantidades_plan[row['GrupoParte']] = 0
+                                continue
+                                
+                            faltante = max(0, row['Faltante'])
+                            std_pack = row['StdPack']
+                            rate = row['Rate']
                             
-                            # Calcular cantidad según tiempo disponible
-                            cantidad_raw = tiempo_por_grupo * rate
-                            cantidad = int(np.floor(cantidad_raw / std_pack) * std_pack)
+                            # Calcular cantidad redondeando al std_pack más cercano
+                            cantidad_raw = faltante
+                            cantidad = int(np.ceil(cantidad_raw / std_pack) * std_pack)
                             
-                            cantidades_plan[grupo] = cantidad
+                            # Calcular tiempo necesario
+                            tiempo_necesario = cantidad / rate
+                            
+                            # Si el tiempo excede lo disponible, ajustar
+                            if tiempo_asignado + tiempo_necesario > capacidad_disponible:
+                                tiempo_restante = capacidad_disponible - tiempo_asignado
+                                cantidad = int(np.floor(tiempo_restante * rate / std_pack) * std_pack)
+                                if cantidad <= 0:
+                                    cantidad = 0
+                                    
+                            cantidades_plan[row['GrupoParte']] = cantidad
+                            tiempo_asignado += cantidad / rate + (1.0 if cantidad > 0 else 0)  # Sumar tiempo de cambio si hay producción
+                    
+                    else:  # Producción mínima para todos
+                        # Priorizar productos con faltante
+                        df_con_faltante = df_simulacion[df_simulacion['Faltante'] > 0].copy()
+                        
+                        if not df_con_faltante.empty:
+                            # Calcular producción proporcional
+                            tiempo_total_requerido = sum([f / r + 1.0 for f, r in zip(df_con_faltante['Faltante'], df_con_faltante['Rate'])])
+                            factor_ajuste = min(1.0, capacidad_disponible / tiempo_total_requerido if tiempo_total_requerido > 0 else 1.0)
+                            
+                            for idx, row in df_con_faltante.iterrows():
+                                faltante = max(0, row['Faltante'])
+                                std_pack = row['StdPack']
+                                rate = row['Rate']
+                                
+                                # Calcular producción proporcional
+                                cantidad_raw = faltante * factor_ajuste
+                                cantidad = int(np.ceil(cantidad_raw / std_pack) * std_pack)
+                                
+                                cantidades_plan[row['GrupoParte']] = cantidad
+                                
+                            # Para productos sin faltante, asignar 0
+                            for grupo in grupos_unicos:
+                                if grupo not in cantidades_plan:
+                                    cantidades_plan[grupo] = 0
+                        else:
+                            # Si no hay faltantes, asignar una cantidad mínima a todos
+                            tiempo_por_grupo = capacidad_disponible / len(grupos_unicos)
+                            
+                            for grupo in grupos_unicos:
+                                std_pack = df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'StdPack'].iloc[0]
+                                rate = df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Rate'].iloc[0]
+                                
+                                # Calcular cantidad según tiempo disponible
+                                cantidad_raw = tiempo_por_grupo * rate
+                                cantidad = int(np.floor(cantidad_raw / std_pack) * std_pack)
+                                
+                                cantidades_plan[grupo] = cantidad
                 
                 # Guardar el plan en la sesión
                 st.session_state.cantidades_plan = cantidades_plan
                 st.session_state.capacidad_disponible = capacidad_disponible
+                st.session_state.modo_plan = modo_plan
         
         if submitted or 'cantidades_plan' in st.session_state:
             # Guardar los valores en session_state para mantenerlos después de la sumisión
@@ -1132,14 +1195,28 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
             
             # Mostrar el dataframe con formato
             df_mostrar = df_simulacion_filtrado[['GrupoParte', 'Cantidad', 'Tiempo Produccion', 'Tiempo Cambio', 'Tiempo Total']].copy()
-            df_mostrar.columns = ['Grupo de Parte', 'Cantidad', 'Tiempo Producción (hrs)', 'Tiempo Cambio (hrs)', 'Tiempo Total (hrs)']
+            df_mostrar.columns = ['Grupo de Parte', 'Cantidad (sets)', 'Tiempo Producción (hrs)', 'Tiempo Cambio (hrs)', 'Tiempo Total (hrs)']
             
             # Formatear columnas numéricas
             df_mostrar['Tiempo Producción (hrs)'] = df_mostrar['Tiempo Producción (hrs)'].round(2)
             df_mostrar['Tiempo Cambio (hrs)'] = df_mostrar['Tiempo Cambio (hrs)'].round(2)
             df_mostrar['Tiempo Total (hrs)'] = df_mostrar['Tiempo Total (hrs)'].round(2)
             
+            # Calcular total de sets
+            total_sets = df_mostrar['Cantidad (sets)'].sum()
+            
+            # Mostrar el dataframe
             st.dataframe(df_mostrar, hide_index=True)
+            
+            # Si es un plan manual, mostrar el total de sets
+            if 'modo_plan' in st.session_state and st.session_state.modo_plan == "Plan manual (ingresar cantidades)":
+                st.info(f"Total de sets a producir: **{total_sets}** sets")
+                
+                # Mostrar la cantidad por grupo en formato más legible
+                if len(df_mostrar) > 0:
+                    st.write("### Resumen de cantidades por grupo:")
+                    resumen_texto = ", ".join([f"{row['Grupo de Parte']}: {row['Cantidad (sets)']} sets" for _, row in df_mostrar.iterrows()])
+                    st.write(resumen_texto)
         else:
             st.info("Complete el formulario y haga clic en 'Calcular Plan de Producción' para ver los resultados.")
         
@@ -1235,13 +1312,21 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
             
             if not df_produccion.empty:
                 # Crear gráfico de barras apiladas
+                # Determinar el tipo de plan para el título
+                tipo_plan_texto = ""
+                if 'modo_plan' in st.session_state:
+                    if st.session_state.modo_plan == "Plan manual (ingresar cantidades)":
+                        tipo_plan_texto = "Plan Manual"
+                    else:
+                        tipo_plan_texto = f"Plan Automático ({tipo_plan})" if 'tipo_plan' in locals() else "Plan Automático"
+                
                 fig = px.bar(
                     df_produccion,
                     x='Dia',
                     y='Horas',
                     color='Producto',
                     facet_row='Turno',
-                    title=f'Distribución de la Producción - Transfer {numeros_transfer[indice_maquina]}',
+                    title=f'Distribución de la Producción - Transfer {numeros_transfer[indice_maquina]} - {tipo_plan_texto}',
                     labels={'Horas': 'Horas Utilizadas'},
                     category_orders={"Dia": dias, "Turno": turnos},
                     color_discrete_sequence=px.colors.qualitative.Bold
