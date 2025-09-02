@@ -679,7 +679,12 @@ elif st.session_state.page == 'update_inventory':
                         key=f"inv2_{parte}",
                         help=f"Estándar: {catalogo[catalogo['Parte'] == parte]['StdPack'].iloc[0]}, Objetivo: {catalogo[catalogo['Parte'] == parte]['Objetivo'].iloc[0]}"
                     )        # Campos para registrar usuario que realiza el cambio
-        usuario = st.text_input("Su Nombre (para registro de cambios)", key="nombre_usuario")
+        if 'ultimo_usuario' not in st.session_state:
+            st.session_state.ultimo_usuario = ""
+            
+        usuario = st.text_input("Su Nombre (para registro de cambios)", 
+                               value=st.session_state.ultimo_usuario,
+                               key="nombre_usuario_actual")
         
         # Botón para guardar cambios
         submitted = st.form_submit_button("Guardar Cambios")
@@ -688,6 +693,9 @@ elif st.session_state.page == 'update_inventory':
             if not usuario.strip():
                 st.warning("Por favor ingrese su nombre para registrar el cambio")
             else:
+                # Guardar temporalmente el nombre de usuario
+                st.session_state.ultimo_usuario = usuario
+                
                 # Detectar cambios en el inventario
                 cambios_inventario = []
                 for parte, nuevo_valor in st.session_state.temp_inventario.items():
@@ -718,12 +726,17 @@ elif st.session_state.page == 'update_inventory':
                 st.session_state.ultima_actualizacion = datos_guardado["ultima_actualizacion"]
                 
                 st.success(f"✅ Inventario actualizado correctamente por {usuario}")
+                # Borrar el usuario después de guardar cambios
+                st.session_state.ultimo_usuario = ""
+                
                 # Volver automáticamente al dashboard después de actualizar
                 st.session_state.page = 'dashboard'
                 st.rerun()
     
     # Botón para cancelar y volver al dashboard
     if st.button("Cancelar"):
+        # También borrar el usuario al cancelar
+        st.session_state.ultimo_usuario = ""
         st.session_state.page = 'dashboard'
         st.rerun()
 
@@ -732,7 +745,7 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     st.header("🔐 Panel de Administrador")
     
     # Crear pestañas para diferentes secciones del panel de administrador
-    tab1, tab2 = st.tabs(["📋 Tabla General", "📝 Registro de Cambios"])
+    tab1, tab2, tab3 = st.tabs(["📋 Tabla General", "⏱ Capacidad de Máquina", "📝 Registro de Cambios"])
     
     with tab1:
         # Tabla completa con todos los cálculos
@@ -885,6 +898,130 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     st.caption("La prioridad se calcula según el tiempo necesario para alcanzar el objetivo.")
     
     with tab2:
+        # Pestaña de capacidad de máquina
+        st.subheader("⏱ Análisis de Capacidad de Máquina")
+        
+        # Definir la capacidad disponible por máquina
+        CAPACIDAD_SEMANAL = 22.5 * 5.6  # 22.5 horas por 5.6 días
+        TIEMPO_CAMBIO = 1.0  # 1 hora por cambio de producto
+        
+        # Crear selector de máquina
+        maquina_cap = st.selectbox(
+            "Seleccionar máquina para análisis de capacidad",
+            maquinas,
+            key="maquina_capacidad"
+        )
+        
+        # Filtrar datos para la máquina seleccionada
+        df_maquina_cap = df_metricas[df_metricas['Maquina'] == maquina_cap].copy()
+        
+        # Calcular grupos de producto (cada grupo requiere un cambio)
+        grupos_unicos = df_maquina_cap['GrupoParte'].nunique()
+        tiempo_cambios = grupos_unicos * TIEMPO_CAMBIO
+        
+        # Calcular tiempo total necesario para la producción
+        tiempo_total_produccion = df_maquina_cap['TiempoNecesario'].sum()
+        
+        # Calcular tiempo total incluyendo cambios
+        tiempo_total = tiempo_total_produccion + tiempo_cambios
+        
+        # Mostrar resultados
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Capacidad Semanal", f"{CAPACIDAD_SEMANAL:.1f} hrs")
+        with col2:
+            st.metric("Tiempo de Producción", f"{tiempo_total_produccion:.1f} hrs")
+        with col3:
+            st.metric("Tiempo de Cambios", f"{tiempo_cambios:.1f} hrs ({grupos_unicos} cambios)")
+        
+        # Calcular porcentaje de utilización
+        porcentaje_utilizacion = (tiempo_total / CAPACIDAD_SEMANAL) * 100
+        
+        # Mostrar gráfico de utilización
+        st.subheader("Utilización de Capacidad")
+        
+        # Determinar color según utilización
+        if porcentaje_utilizacion > 100:
+            color_barra = "red"
+            mensaje = "⚠️ **SOBRECAPACIDAD**: La máquina no tiene suficiente tiempo para completar toda la producción"
+        elif porcentaje_utilizacion > 85:
+            color_barra = "orange"
+            mensaje = "⚠️ **ATENCIÓN**: La máquina está operando cerca de su capacidad máxima"
+        else:
+            color_barra = "green"
+            mensaje = "✅ **CAPACIDAD SUFICIENTE**: La máquina tiene capacidad para la producción actual"
+        
+        # Mostrar barra de progreso personalizada
+        st.progress(min(porcentaje_utilizacion / 100, 1.0), text=f"Utilización: {porcentaje_utilizacion:.1f}%")
+        st.markdown(mensaje)
+        
+        # Tabla detallada de productos
+        st.subheader("Desglose por Producto")
+        
+        # Agrupar por GrupoParte para mostrar tiempos por grupo
+        df_grupos = df_maquina_cap.groupby('GrupoParte').agg({
+            'TiempoNecesario': 'sum',
+            'Faltante': 'sum',
+            'Parte': 'count',
+            'Prioridad': 'first'  # Tomar la primera prioridad para cada grupo
+        }).reset_index()
+        df_grupos = df_grupos.rename(columns={'Parte': 'Cantidad de Partes'})
+        
+        # Añadir columna de tiempo de cambio
+        df_grupos['Tiempo de Cambio'] = TIEMPO_CAMBIO
+        df_grupos['Tiempo Total'] = df_grupos['TiempoNecesario'] + df_grupos['Tiempo de Cambio']
+        df_grupos['% de Capacidad'] = (df_grupos['Tiempo Total'] / CAPACIDAD_SEMANAL) * 100
+        
+        # Convertir prioridad a numérico para ordenar correctamente
+        df_grupos['Prioridad_num'] = pd.to_numeric(df_grupos['Prioridad'], errors='coerce')
+        
+        # Ordenar por mayor tiempo total
+        df_grupos = df_grupos.sort_values('Tiempo Total', ascending=False)
+        
+        # Preparar los datos para la tabla
+        # Formatear la prioridad para mostrarla correctamente
+        df_grupos['Prioridad_display'] = df_grupos['Prioridad'].apply(
+            lambda x: int(x) if pd.notnull(x) and str(x).replace('.', '', 1).isdigit() else '-'
+        )
+        
+        # Mostrar la tabla
+        st.dataframe(
+            df_grupos[['GrupoParte', 'Prioridad_display', 'TiempoNecesario', 'Tiempo de Cambio', 
+                      'Tiempo Total', '% de Capacidad', 'Faltante', 'Cantidad de Partes']],
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        # Sugerir optimizaciones si es necesario
+        if porcentaje_utilizacion > 100:
+            st.subheader("Sugerencias para Optimización")
+            exceso = tiempo_total - CAPACIDAD_SEMANAL
+            st.write(f"Necesitas reducir aproximadamente **{exceso:.1f} horas** para estar dentro de la capacidad disponible.")
+            
+            # Sugerir eliminar algunos productos de menor prioridad
+            df_candidatos = df_grupos.sort_values('Prioridad_num', ascending=False)
+            st.write("Considera mover estos productos a la siguiente semana:")
+            
+            # Encontrar combinación de productos que sumen cerca del exceso de tiempo
+            tiempo_encontrado = 0
+            productos_a_mover = []
+            
+            for i, (_, producto) in enumerate(df_candidatos.iterrows()):
+                if tiempo_encontrado >= exceso:
+                    break
+                    
+                tiempo_producto = producto['Tiempo Total']
+                productos_a_mover.append({
+                    'nombre': producto['GrupoParte'],
+                    'tiempo': tiempo_producto
+                })
+                tiempo_encontrado += tiempo_producto
+                
+                st.write(f"- {producto['GrupoParte']}: {producto['Tiempo Total']:.1f} hrs")
+                
+            st.info(f"Moviendo estos productos liberarías {tiempo_encontrado:.1f} de las {exceso:.1f} horas necesarias.")
+    
+    with tab3:
         # Mostrar registro de cambios en el catálogo y en el inventario
         st.subheader("📝 Registro de Cambios")
         
