@@ -1,10 +1,12 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import math
 import os
 import hashlib
 import json
 import datetime
+from functools import lru_cache
 
 try:
     # Configuración de la página
@@ -61,9 +63,8 @@ else:
     cache_decorator = st.cache
 
 # Función para calcular hash de un archivo
+@lru_cache(maxsize=8)
 def calcular_hash_archivo(ruta_archivo):
-    import hashlib
-    
     if not os.path.exists(ruta_archivo):
         return None
     
@@ -74,11 +75,20 @@ def calcular_hash_archivo(ruta_archivo):
     except Exception:
         return None
 
-@cache_decorator(ttl=60)  # Caché de 60 segundos para permitir refrescar el catálogo
+@cache_decorator(ttl=300)  # Caché de 5 minutos para reducir lecturas frecuentes
 def cargar_catalogo():
     try:
         # Intentar cargar desde la ruta relativa
-        df = pd.read_csv("catalogo.csv")
+        df = pd.read_csv("catalogo.csv", dtype={
+            'Parte': str,
+            'StdPack': int,
+            'Objetivo': int,
+            'Maquina': str,
+            'Rate': int
+        })
+        
+        # Eliminar duplicados si los hay (más óptimo)
+        df = df.drop_duplicates(subset=['Parte', 'Maquina'], keep='first')
         
         # Calcular hash del catálogo para detectar cambios
         hash_actual = calcular_hash_archivo("catalogo.csv")
@@ -114,10 +124,8 @@ maquinas = sorted(catalogo['Maquina'].unique())
 # Funciones para guardar y cargar inventario de forma persistente
 def guardar_inventario(inventario, usuario="Sistema", cambios=None):
     try:
-        # Convertir el inventario a un formato serializable
-        inventario_serializable = {}
-        for parte, cantidad in inventario.items():
-            inventario_serializable[parte] = int(cantidad)
+        # Convertir el inventario a un formato serializable más eficientemente
+        inventario_serializable = {parte: int(cantidad) for parte, cantidad in inventario.items()}
         
         # Añadir metadatos
         datos = {
@@ -139,6 +147,7 @@ def guardar_inventario(inventario, usuario="Sistema", cambios=None):
         st.error(f"Error al guardar el inventario: {e}")
         return False
 
+@cache_decorator(ttl=600)  # Caché de 10 minutos para el inventario
 def cargar_inventario():
     try:
         # Verificar si el archivo existe
@@ -153,12 +162,13 @@ def cargar_inventario():
     except Exception as e:
         st.warning(f"Error al cargar el inventario desde archivo: {e}")
     
-    # Valores predeterminados si no se puede cargar
-    return {parte: 0 for parte in catalogo['Parte'].unique()}, "Nuevo"
+    # Valores predeterminados si no se puede cargar - usar diccionario por comprensión más eficiente
+    partes_unicas = list(catalogo['Parte'].unique())
+    return dict.fromkeys(partes_unicas, 0), "Nuevo"
 
 def sincronizar_inventario(inventario_actual):
     """Sincroniza el inventario con el catálogo actual, añadiendo nuevas partes 
-    y eliminando las que ya no existen."""
+    y eliminando las que ya no existen. Optimizado para rendimiento."""
     
     # Obtener todas las partes actuales del catálogo
     partes_catalogo = set(catalogo['Parte'].unique())
@@ -166,41 +176,48 @@ def sincronizar_inventario(inventario_actual):
     # Obtener todas las partes en el inventario actual
     partes_inventario = set(inventario_actual.keys())
     
-    # Partes nuevas (están en el catálogo pero no en el inventario)
+    # Cálculos de diferencias en una sola operación
     partes_nuevas = partes_catalogo - partes_inventario
-    
-    # Partes obsoletas (están en el inventario pero no en el catálogo)
     partes_obsoletas = partes_inventario - partes_catalogo
     
-    # Crear una copia del inventario para modificarla
-    inventario_sincronizado = inventario_actual.copy()
+    # Si no hay cambios, devolver rápidamente el inventario original
+    if not partes_nuevas and not partes_obsoletas:
+        return inventario_actual, False, []
     
-    # Añadir nuevas partes con valor 0
+    # Crear una copia del inventario para modificarla de manera más eficiente
+    inventario_sincronizado = {k: v for k, v in inventario_actual.items() if k not in partes_obsoletas}
+    
+    # Añadir nuevas partes con valor 0 de manera optimizada
     for parte in partes_nuevas:
         inventario_sincronizado[parte] = 0
     
-    # Eliminar partes obsoletas
-    for parte in partes_obsoletas:
-        if parte in inventario_sincronizado:
-            del inventario_sincronizado[parte]
-    
-    # Registrar los cambios si hubo modificaciones
-    if partes_nuevas or partes_obsoletas:
-        log = []
-        if partes_nuevas:
-            partes_nuevas_list = sorted(list(partes_nuevas))
-            log.append(f"Añadidas {len(partes_nuevas)} nuevas partes al inventario:")
+    # Registrar los cambios
+    log = []
+    if partes_nuevas:
+        partes_nuevas_list = sorted(partes_nuevas)
+        log.append(f"Añadidas {len(partes_nuevas)} nuevas partes al inventario:")
+        # Limitar la cantidad de partes mostradas si son muchas
+        if len(partes_nuevas) > 20:
+            for parte in partes_nuevas_list[:10]:
+                log.append(f"  - {parte}")
+            log.append(f"  - ... y {len(partes_nuevas) - 10} más")
+        else:
             for parte in partes_nuevas_list:
                 log.append(f"  - {parte}")
-        if partes_obsoletas:
-            partes_obsoletas_list = sorted(list(partes_obsoletas))
-            log.append(f"Eliminadas {len(partes_obsoletas)} partes obsoletas del inventario:")
+    
+    if partes_obsoletas:
+        partes_obsoletas_list = sorted(partes_obsoletas)
+        log.append(f"Eliminadas {len(partes_obsoletas)} partes obsoletas del inventario:")
+        # Limitar la cantidad de partes mostradas si son muchas
+        if len(partes_obsoletas) > 20:
+            for parte in partes_obsoletas_list[:10]:
+                log.append(f"  - {parte}")
+            log.append(f"  - ... y {len(partes_obsoletas) - 10} más")
+        else:
             for parte in partes_obsoletas_list:
                 log.append(f"  - {parte}")
-        return inventario_sincronizado, True, log
     
-    # Si no hubo cambios, devolver el inventario original
-    return inventario_sincronizado, False, []
+    return inventario_sincronizado, True, log
 
 # Inicializar o sincronizar el inventario
 if 'inventario' not in st.session_state or st.session_state.forzar_sincronizacion:
@@ -269,14 +286,25 @@ with st.sidebar.expander("Acceso Administrador"):
         else:
             st.error("❌ Usuario o contraseña incorrectos")
 
-# Función para identificar parejas LH/RH
-def identificar_parejas(partes):
+# Función para identificar parejas LH/RH (optimizada)
+@lru_cache(maxsize=32)
+def identificar_parejas(partes_tuple):
+    partes = list(partes_tuple)
     parejas = {}
+    
+    # Enfoque más eficiente para evitar múltiples reemplazos
     for parte in partes:
-        # Verificar si es LH o RH
-        if " LH" in parte or " RH" in parte:
-            # Extraer nombre base (sin LH/RH)
-            base_name = parte.replace(" LH", "").replace(" RH", "")
+        lado = None
+        base_name = parte
+        
+        if " LH" in parte:
+            lado = "LH"
+            base_name = parte.replace(" LH", "")
+        elif " RH" in parte:
+            lado = "RH"
+            base_name = parte.replace(" RH", "")
+        
+        if lado:  # Solo procesar si es LH o RH
             if base_name not in parejas:
                 parejas[base_name] = []
             parejas[base_name].append(parte)
@@ -285,75 +313,89 @@ def identificar_parejas(partes):
     pares_completos = {k: v for k, v in parejas.items() if len(v) >= 2}
     return pares_completos
 
-# Calcular métricas
+# Calcular métricas (optimizado)
 def calcular_metricas(catalogo, inventario):
     # Crear una copia del catálogo para no modificar el original
     df = catalogo.copy()
     
-    # Agregar columna de inventario actual
-    df['Inventario'] = df['Parte'].map(inventario)
+    # Convertir a numpy para cálculos más rápidos
+    parte_series = df['Parte']
+    
+    # Crear vectores para cálculos
+    inventario_array = pd.Series(inventario).loc[parte_series].values
+    objetivo_array = df['Objetivo'].values
+    stdpack_array = df['StdPack'].values
+    rate_array = df['Rate'].values
+    
+    # Calcular directamente sin apply
+    df['Inventario'] = inventario_array
     
     # Calcular faltante
-    df['Faltante'] = df['Objetivo'] - df['Inventario']
-    df['Faltante'] = df['Faltante'].apply(lambda x: max(0, x))  # No permitir faltantes negativos
+    faltante_array = objetivo_array - inventario_array
+    faltante_array = np.maximum(faltante_array, 0)  # Más eficiente que max()
+    df['Faltante'] = faltante_array
     
     # Calcular cajas necesarias
-    df['CajasNecesarias'] = df['Faltante'] / df['StdPack']
-    df['CajasNecesarias'] = df['CajasNecesarias'].apply(lambda x: math.ceil(x) if x > 0 else 0)
+    cajas_array = faltante_array / stdpack_array
+    df['CajasNecesarias'] = np.ceil(np.where(cajas_array > 0, cajas_array, 0)).astype(int)
     
     # Calcular tiempo necesario (horas)
-    df['TiempoNecesario'] = df['Faltante'] / df['Rate']
+    df['TiempoNecesario'] = np.divide(faltante_array, rate_array, out=np.zeros_like(faltante_array, dtype=float), where=rate_array!=0)
     
-    # Crear un ranking temporal para asignar prioridades
-    df_temp = df.copy()
-    df_temp = df_temp[df_temp['Faltante'] > 0]  # Solo considerar partes con faltante
-    
-    if not df_temp.empty:
-        # Identificar parejas LH/RH
-        parejas = identificar_parejas(df_temp['Parte'].unique())
+    # Filtrar para partes con faltante más eficientemente
+    mask_faltante = faltante_array > 0
+    if mask_faltante.any():
+        df_temp = df[mask_faltante].copy()
         
-        # Crear una columna para agrupar parejas
-        df_temp['GrupoParte'] = df_temp['Parte']
+        # Identificar parejas LH/RH - convertir a tuple para cache
+        partes_tuple = tuple(df_temp['Parte'].unique())
+        parejas = identificar_parejas(partes_tuple)
         
-        # Reemplazar nombres para agrupar parejas
+        # Crear una columna para agrupar parejas más eficientemente con un diccionario de mapeo
+        parte_a_grupo = {}
+        for parte in df_temp['Parte']:
+            parte_a_grupo[parte] = parte  # Por defecto, cada parte es su propio grupo
+        
+        # Poblar el diccionario de mapeo
         for base_name, parts in parejas.items():
             for part in parts:
-                df_temp.loc[df_temp['Parte'] == part, 'GrupoParte'] = base_name
+                parte_a_grupo[part] = base_name
         
-        # Calcular tiempo máximo por grupo y máquina
+        # Aplicar el mapeo directamente
+        df_temp['GrupoParte'] = df_temp['Parte'].map(parte_a_grupo)
+        
+        # Cálculos de tiempo por grupo optimizados
         tiempo_por_grupo = df_temp.groupby(['GrupoParte', 'Maquina'])['TiempoNecesario'].max().reset_index()
         
-        # Asignar prioridad separada por máquina (Transfer)
-        # Agrupar por máquina
+        # Asignar prioridades de forma vectorizada
         prioridad_por_maquina = {}
         for maquina in tiempo_por_grupo['Maquina'].unique():
-            # Filtrar por máquina
-            df_maquina = tiempo_por_grupo[tiempo_por_grupo['Maquina'] == maquina]
-            # Ordenar por tiempo necesario (más tiempo → mayor prioridad)
-            df_maquina = df_maquina.sort_values('TiempoNecesario', ascending=False)
-            # Asignar prioridad para esta máquina
-            for i, (idx, row) in enumerate(df_maquina.iterrows()):
-                prioridad_por_maquina[(row['GrupoParte'], row['Maquina'])] = i + 1
+            # Filtrar y ordenar en un solo paso
+            indices = tiempo_por_grupo.loc[tiempo_por_grupo['Maquina'] == maquina].sort_values('TiempoNecesario', ascending=False).index
+            # Asignar prioridades en orden
+            for i, idx in enumerate(indices):
+                row = tiempo_por_grupo.loc[idx]
+                prioridad_por_maquina[(row['GrupoParte'], maquina)] = i + 1
         
-        # Asignar las prioridades al DataFrame
+        # Asignar prioridades más eficientemente usando vectorización
         tiempo_por_grupo['Prioridad'] = tiempo_por_grupo.apply(
             lambda row: prioridad_por_maquina.get((row['GrupoParte'], row['Maquina']), None), 
             axis=1
         )
         
-        # Fusionar de vuelta las prioridades al DataFrame temporal
+        # Fusiones más eficientes usando índices
         df_temp = df_temp.merge(
             tiempo_por_grupo[['GrupoParte', 'Maquina', 'Prioridad']], 
             on=['GrupoParte', 'Maquina'], 
             how='left'
         )
         
-        # Fusionar las prioridades al DataFrame original
-        df = df.merge(
-            df_temp[['Parte', 'Maquina', 'Prioridad', 'GrupoParte']], 
-            on=['Parte', 'Maquina'], 
-            how='left'
-        )
+        # Preparar columnas para el DataFrame principal
+        df['GrupoParte'] = df['Parte']  # Inicializar
+        
+        # Transferir valores calculados de df_temp a df de manera eficiente
+        df.loc[mask_faltante, 'Prioridad'] = df_temp['Prioridad'].values
+        df.loc[mask_faltante, 'GrupoParte'] = df_temp['GrupoParte'].values
     else:
         df['Prioridad'] = None
         df['GrupoParte'] = df['Parte']
@@ -574,25 +616,82 @@ elif st.session_state.page == 'update_inventory':
         partes_unicas = sorted(catalogo['Parte'].unique())
         mitad = len(partes_unicas) // 2
         
-        # Primera columna
-        with col1:
-            for i, parte in enumerate(partes_unicas[:mitad]):
-                st.session_state.temp_inventario[parte] = st.number_input(
-                    f"{parte}", 
-                    min_value=0, 
-                    value=st.session_state.inventario[parte],
-                    key=f"inv_{parte}"
-                )
+        # Usar un diseño más eficiente para grandes conjuntos de datos
+        # Usar filtro y agrupación para una mejor experiencia de usuario
+        search_term = st.text_input("Buscar parte:", key="search_parte")
         
-        # Segunda columna
-        with col2:
-            for i, parte in enumerate(partes_unicas[mitad:]):
-                st.session_state.temp_inventario[parte] = st.number_input(
-                    f"{parte}", 
-                    min_value=0, 
-                    value=st.session_state.inventario[parte],
-                    key=f"inv2_{parte}"
-                )
+        # Agrupar por máquina para mejor organización
+        groupby_machine = st.checkbox("Agrupar por máquina", value=True)
+        
+        if groupby_machine:
+            # Crear un diccionario para mapear partes a máquinas
+            parte_a_maquina = {}
+            for _, row in catalogo.iterrows():
+                parte_a_maquina[row['Parte']] = row['Maquina']
+                
+            # Agrupar por máquinas
+            for maquina in sorted(catalogo['Maquina'].unique()):
+                partes_maquina = [p for p in partes_unicas if parte_a_maquina.get(p) == maquina]
+                
+                # Filtrar por término de búsqueda
+                if search_term:
+                    partes_maquina = [p for p in partes_maquina if search_term.lower() in p.lower()]
+                
+                # Si hay partes para esta máquina después del filtrado
+                if partes_maquina:
+                    with st.expander(f"{maquina} ({len(partes_maquina)} partes)"):
+                        # Crear columnas dentro del expander
+                        mc1, mc2 = st.columns(2)
+                        mitad_maquina = len(partes_maquina) // 2
+                        
+                        # Primera columna de la máquina
+                        with mc1:
+                            for parte in partes_maquina[:mitad_maquina]:
+                                st.session_state.temp_inventario[parte] = st.number_input(
+                                    f"{parte}", 
+                                    min_value=0, 
+                                    value=st.session_state.inventario[parte],
+                                    key=f"inv_{parte}"
+                                )
+                        
+                        # Segunda columna de la máquina
+                        with mc2:
+                            for parte in partes_maquina[mitad_maquina:]:
+                                st.session_state.temp_inventario[parte] = st.number_input(
+                                    f"{parte}", 
+                                    min_value=0, 
+                                    value=st.session_state.inventario[parte],
+                                    key=f"inv2_{parte}"
+                                )
+        else:
+            # Modo tradicional en dos columnas
+            # Filtrar por término de búsqueda
+            if search_term:
+                partes_filtradas = [p for p in partes_unicas if search_term.lower() in p.lower()]
+            else:
+                partes_filtradas = partes_unicas
+                
+            mitad = len(partes_filtradas) // 2
+            
+            # Primera columna
+            with col1:
+                for parte in partes_filtradas[:mitad]:
+                    st.session_state.temp_inventario[parte] = st.number_input(
+                        f"{parte}", 
+                        min_value=0, 
+                        value=st.session_state.inventario[parte],
+                        key=f"inv_{parte}"
+                    )
+            
+            # Segunda columna
+            with col2:
+                for parte in partes_filtradas[mitad:]:
+                    st.session_state.temp_inventario[parte] = st.number_input(
+                        f"{parte}", 
+                        min_value=0, 
+                        value=st.session_state.inventario[parte],
+                        key=f"inv2_{parte}"
+                    )
         
         # Campos para registrar usuario que realiza el cambio
         usuario = st.text_input("Su Nombre (para registro de cambios)", key="nombre_usuario")
@@ -654,37 +753,54 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
         # Tabla completa con todos los cálculos
         st.subheader("📋 Tabla General de Producción")
         
-        # Selector de máquina
-        maquina_seleccionada = st.selectbox(
-            "Seleccionar máquina",
-            ["Todas"] + list(maquinas),
-            index=0
-        )
+        # Selector de máquina y búsqueda
+        col_maquina, col_busqueda = st.columns([1, 2])
+        
+        with col_maquina:
+            maquina_seleccionada = st.selectbox(
+                "Seleccionar máquina",
+                ["Todas"] + list(maquinas),
+                index=0
+            )
+        
+        with col_busqueda:
+            busqueda_parte = st.text_input("Buscar parte:", key="busqueda_tabla")
     
-    # Preparar la tabla para mostrar
+    # Preparar la tabla para mostrar de manera más eficiente
     df_tabla = df_metricas.copy()
     
-    # Filtrar por máquina si se seleccionó una específica
+    # Aplicar filtros
     if maquina_seleccionada != "Todas":
         df_tabla = df_tabla[df_tabla['Maquina'] == maquina_seleccionada]
     
-    # Ordenar por máquina y prioridad
-    df_tabla = df_tabla.sort_values(['Maquina', 'Prioridad', 'GrupoParte'], na_position='last')
+    if busqueda_parte:
+        # Filtro de búsqueda case-insensitive
+        mascara_busqueda = df_tabla['Parte'].str.lower().str.contains(busqueda_parte.lower())
+        df_tabla = df_tabla[mascara_busqueda]
+    
+    # Ordenar por máquina y prioridad más eficientemente
+    orden = ['Maquina', 'Prioridad', 'GrupoParte']
+    df_tabla = df_tabla.sort_values(orden, na_position='last')
     df_tabla = df_tabla.fillna({'Prioridad': '-'})
     
-    # Formatear columnas numéricas
-    df_tabla['Inventario'] = df_tabla['Inventario'].astype(int)
-    df_tabla['Objetivo'] = df_tabla['Objetivo'].astype(int)
-    df_tabla['Faltante'] = df_tabla['Faltante'].astype(int)
-    df_tabla['CajasNecesarias'] = df_tabla['CajasNecesarias'].astype(int)
+    # Formatear columnas numéricas más eficientemente
+    columnas_enteras = ['Inventario', 'Objetivo', 'Faltante', 'CajasNecesarias']
+    for col in columnas_enteras:
+        df_tabla[col] = df_tabla[col].astype('int32')  # Usar int32 en lugar de int64 para ahorrar memoria
+    
     df_tabla['TiempoNecesario'] = df_tabla['TiempoNecesario'].round(2)
     
-    # Columnas a mostrar
+    # Columnas a mostrar - optimizar para mostrar datos relevantes
     columnas_mostrar = [
         'Parte', 'GrupoParte', 'Maquina', 'Inventario', 'Objetivo', 
         'Faltante', 'StdPack', 'CajasNecesarias', 
         'Rate', 'TiempoNecesario', 'Prioridad'
     ]
+    
+    # Opción para filtrar solo partes con faltante
+    mostrar_solo_faltantes = st.checkbox("Mostrar solo partes con faltante", value=False)
+    if mostrar_solo_faltantes:
+        df_tabla = df_tabla[df_tabla['Faltante'] > 0]
     
     # Mostrar la tabla
     st.dataframe(
