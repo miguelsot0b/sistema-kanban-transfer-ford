@@ -393,10 +393,14 @@ def calcular_metricas(catalogo, inventario):
             axis=1
         )
         
+        # Convertir a tipo numérico para evitar problemas de tipos mixtos
+        df_temp['Prioridad'] = pd.to_numeric(df_temp['Prioridad'], errors='coerce')
+        
         # Transferir prioridades al DataFrame principal para las partes con faltante
         df.loc[mask_faltante, 'Prioridad'] = df_temp['Prioridad'].values
     else:
-        df['Prioridad'] = None
+        # Asignar valores NaN en lugar de None para mejor compatibilidad
+        df['Prioridad'] = np.nan
     
     return df
 
@@ -482,7 +486,9 @@ if st.session_state.page == 'dashboard':
             if "LH" in partes_grupo_prioritario['Parte'].iloc[0] or "RH" in partes_grupo_prioritario['Parte'].iloc[0]:
                 nombre_base = grupo_prioritario
                 st.markdown(f"### Set: **{nombre_base}**")
-                st.markdown(f"**Prioridad:** {int(partes_grupo_prioritario['Prioridad'].iloc[0])}")
+                prioridad_valor = partes_grupo_prioritario['Prioridad'].iloc[0]
+                prioridad_display = int(prioridad_valor) if pd.notnull(prioridad_valor) else '-'
+                st.markdown(f"**Prioridad:** {prioridad_display}")
                 
                 # Mostrar información del inventario en una caja destacada
                 inventario_total = partes_grupo_prioritario['Inventario'].sum()
@@ -550,7 +556,9 @@ if st.session_state.page == 'dashboard':
                     st.metric("Tiempo (horas)", f"{parte_asignada['TiempoNecesario']:.2f}")
                 
                 # Mostrar prioridad con un indicador visual
-                st.write(f"**Prioridad:** {int(parte_asignada['Prioridad'])}")
+                prioridad_valor = parte_asignada['Prioridad']
+                prioridad_display = int(prioridad_valor) if pd.notnull(prioridad_valor) else '-'
+                st.write(f"**Prioridad:** {prioridad_display}")
             
             # Barra de progreso para visualizar el avance hacia el objetivo para el grupo
             inventario_promedio = partes_grupo_prioritario['Inventario'].mean()
@@ -593,7 +601,8 @@ if st.session_state.page == 'dashboard':
                 
                 # Cabecera con datos básicos
                 st.markdown(f"**Set:** {siguiente_nombre_base}")
-                st.markdown(f"**Prioridad:** {int(siguiente_prioridad)}")
+                prioridad_display = int(siguiente_prioridad) if pd.notnull(siguiente_prioridad) else '-'
+                st.markdown(f"**Prioridad:** {prioridad_display}")
                 
                 # Mostrar inventario del siguiente grupo
                 siguiente_inventario_total = partes_siguiente_grupo['Inventario'].sum()
@@ -789,9 +798,16 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
         df_tabla = df_tabla[mascara_busqueda]
     
     # Ordenar por máquina y prioridad más eficientemente
-    orden = ['Maquina', 'Prioridad', 'GrupoParte']
+    # Convertir temporalmente prioridad a numérico para ordenar correctamente
+    df_tabla['Prioridad_temp'] = pd.to_numeric(df_tabla['Prioridad'], errors='coerce')
+    orden = ['Maquina', 'Prioridad_temp', 'GrupoParte']
     df_tabla = df_tabla.sort_values(orden, na_position='last')
-    df_tabla = df_tabla.fillna({'Prioridad': '-'})
+    df_tabla = df_tabla.drop('Prioridad_temp', axis=1)
+    
+    # Convertir Prioridad a formato mixto (entero o '-')
+    df_tabla['Prioridad'] = df_tabla['Prioridad'].apply(
+        lambda x: int(x) if pd.notnull(x) and str(x).replace('.', '', 1).isdigit() else '-'
+    )
     
     # Formatear columnas numéricas más eficientemente
     columnas_enteras = ['Inventario', 'Objetivo', 'Faltante', 'CajasNecesarias']
@@ -829,6 +845,13 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
         # Filtrar por máquina si se seleccionó una específica
         df_para_agrupar = df_tabla
         
+        # Convertir temporalmente la prioridad a numérico para evitar errores en la agrupación
+        # Guardar los valores originales para restaurarlos después
+        prioridades_originales = df_para_agrupar['Prioridad'].copy()
+        
+        # Reemplazar valores no numéricos con NaN
+        df_para_agrupar['Prioridad'] = pd.to_numeric(df_para_agrupar['Prioridad'], errors='coerce')
+        
         # Agrupar por GrupoParte y Máquina
         df_grouped = df_para_agrupar.groupby(['GrupoParte', 'Maquina']).agg({
             'Inventario': 'mean',
@@ -836,7 +859,7 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
             'Faltante': 'sum',
             'CajasNecesarias': 'sum',
             'TiempoNecesario': 'max',
-            'Prioridad': 'min'
+            'Prioridad': 'min'  # Ahora es seguro aplicar min() ya que todos son valores numéricos o NaN
         }).reset_index()
         
         # Formatear columnas numéricas
@@ -848,7 +871,9 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
         
         # Ordenar por máquina y prioridad
         df_grouped = df_grouped.sort_values(['Maquina', 'Prioridad'], na_position='last')
-        df_grouped = df_grouped.fillna({'Prioridad': '-'})
+        
+        # Restaurar el formato de la prioridad para mostrar correctamente
+        df_grouped['Prioridad'] = df_grouped['Prioridad'].map(lambda x: int(x) if pd.notnull(x) else '-')
         
         # Columnas a mostrar
         columnas_grouped = [
@@ -873,15 +898,20 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
                 df_maquina_grupos = df_grouped[df_grouped['Maquina'] == maquina]
                 
                 if not df_maquina_grupos.empty:
-                    # Ordenar por prioridad
-                    df_maquina_grupos = df_maquina_grupos.sort_values('Prioridad')
+                    # Convertir temporalmente a numérico para ordenar correctamente
+                    df_maquina_grupos['Prioridad_temp'] = pd.to_numeric(df_maquina_grupos['Prioridad'], errors='coerce')
+                    # Ordenar por prioridad numérica
+                    df_maquina_grupos = df_maquina_grupos.sort_values('Prioridad_temp')
+                    df_maquina_grupos = df_maquina_grupos.drop('Prioridad_temp', axis=1)
                     
                     st.write(f"### Máquina: {maquina}")
                     
                     # Crear lista ordenada con los grupos y sus métricas principales
                     for i, (_, grupo) in enumerate(df_maquina_grupos.iterrows()):
                         if pd.notna(grupo['Prioridad']) and grupo['Prioridad'] != '-':
-                            st.write(f"**{i+1}. {grupo['GrupoParte']}** - Prioridad: {int(grupo['Prioridad'])} - Tiempo: {grupo['TiempoNecesario']:.2f} horas - Cajas: {int(grupo['CajasNecesarias'])}")
+                            prioridad_valor = grupo['Prioridad']
+                            prioridad_display = int(prioridad_valor) if pd.notnull(prioridad_valor) and prioridad_valor != '-' else '-'
+                            st.write(f"**{i+1}. {grupo['GrupoParte']}** - Prioridad: {prioridad_display} - Tiempo: {grupo['TiempoNecesario']:.2f} horas - Cajas: {int(grupo['CajasNecesarias'])}")
                     
                     st.divider()
     
