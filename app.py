@@ -631,88 +631,54 @@ elif st.session_state.page == 'update_inventory':
         # Crear dos columnas para organizar mejor los inputs
         col1, col2 = st.columns(2)
         
-        # Crear input para cada número de parte único
+        # Obtener todas las partes y ordenarlas alfabéticamente
         partes_unicas = sorted(catalogo['Parte'].unique())
-        mitad = len(partes_unicas) // 2
         
-        # Usar un diseño más eficiente para grandes conjuntos de datos
-        # Usar filtro y agrupación para una mejor experiencia de usuario
-        search_term = st.text_input("Buscar parte:", key="search_parte")
+        # Crear un campo de búsqueda para filtrar partes
+        search_term = st.text_input("Buscar parte:", key="search_parte", 
+                                   help="Filtra partes por nombre (ej. 'CX430', 'LH', 'U725', etc.)")
         
-        # Agrupar por máquina para mejor organización
-        groupby_machine = st.checkbox("Agrupar por máquina", value=True)
-        
-        if groupby_machine:
-            # Crear un diccionario para mapear partes a máquinas
-            parte_a_maquina = {}
-            for _, row in catalogo.iterrows():
-                parte_a_maquina[row['Parte']] = row['Maquina']
-                
-            # Agrupar por máquinas
-            for maquina in sorted(catalogo['Maquina'].unique()):
-                partes_maquina = [p for p in partes_unicas if parte_a_maquina.get(p) == maquina]
-                
-                # Filtrar por término de búsqueda
-                if search_term:
-                    partes_maquina = [p for p in partes_maquina if search_term.lower() in p.lower()]
-                
-                # Si hay partes para esta máquina después del filtrado
-                if partes_maquina:
-                    with st.expander(f"{maquina} ({len(partes_maquina)} partes)"):
-                        # Crear columnas dentro del expander
-                        mc1, mc2 = st.columns(2)
-                        mitad_maquina = len(partes_maquina) // 2
-                        
-                        # Primera columna de la máquina
-                        with mc1:
-                            for parte in partes_maquina[:mitad_maquina]:
-                                st.session_state.temp_inventario[parte] = st.number_input(
-                                    f"{parte}", 
-                                    min_value=0, 
-                                    value=st.session_state.inventario[parte],
-                                    key=f"inv_{parte}"
-                                )
-                        
-                        # Segunda columna de la máquina
-                        with mc2:
-                            for parte in partes_maquina[mitad_maquina:]:
-                                st.session_state.temp_inventario[parte] = st.number_input(
-                                    f"{parte}", 
-                                    min_value=0, 
-                                    value=st.session_state.inventario[parte],
-                                    key=f"inv2_{parte}"
-                                )
+        # Filtrar las partes por término de búsqueda si se ha ingresado uno
+        if search_term:
+            partes_filtradas = [p for p in partes_unicas if search_term.lower() in p.lower()]
         else:
-            # Modo tradicional en dos columnas
-            # Filtrar por término de búsqueda
-            if search_term:
-                partes_filtradas = [p for p in partes_unicas if search_term.lower() in p.lower()]
-            else:
-                partes_filtradas = partes_unicas
-                
-            mitad = len(partes_filtradas) // 2
+            partes_filtradas = partes_unicas
             
-            # Primera columna
-            with col1:
-                for parte in partes_filtradas[:mitad]:
-                    st.session_state.temp_inventario[parte] = st.number_input(
-                        f"{parte}", 
-                        min_value=0, 
-                        value=st.session_state.inventario[parte],
-                        key=f"inv_{parte}"
-                    )
+        # Crear columnas para mostrar las partes
+        container = st.container()
+        
+        # Información sobre el número de partes mostradas
+        if search_term:
+            container.caption(f"Mostrando {len(partes_filtradas)} de {len(partes_unicas)} partes")
+        
+        # Dividir las partes en dos columnas para mejor visualización
+        mitad = len(partes_filtradas) // 2
+        
+        # Primera columna
+        with col1:
+            for parte in partes_filtradas[:mitad]:
+                # Opcional: Agregar la máquina como información
+                maquina = catalogo[catalogo['Parte'] == parte]['Maquina'].iloc[0]
+                st.session_state.temp_inventario[parte] = st.number_input(
+                    f"{parte} ({maquina})", 
+                    min_value=0, 
+                    value=st.session_state.inventario[parte],
+                    key=f"inv_{parte}",
+                    help=f"Estándar: {catalogo[catalogo['Parte'] == parte]['StdPack'].iloc[0]}, Objetivo: {catalogo[catalogo['Parte'] == parte]['Objetivo'].iloc[0]}"
+                )
             
             # Segunda columna
             with col2:
                 for parte in partes_filtradas[mitad:]:
+                    # Obtener la máquina para esta parte como información adicional
+                    maquina = catalogo[catalogo['Parte'] == parte]['Maquina'].iloc[0]
                     st.session_state.temp_inventario[parte] = st.number_input(
-                        f"{parte}", 
+                        f"{parte} ({maquina})", 
                         min_value=0, 
                         value=st.session_state.inventario[parte],
-                        key=f"inv2_{parte}"
-                    )
-        
-        # Campos para registrar usuario que realiza el cambio
+                        key=f"inv2_{parte}",
+                        help=f"Estándar: {catalogo[catalogo['Parte'] == parte]['StdPack'].iloc[0]}, Objetivo: {catalogo[catalogo['Parte'] == parte]['Objetivo'].iloc[0]}"
+                    )        # Campos para registrar usuario que realiza el cambio
         usuario = st.text_input("Su Nombre (para registro de cambios)", key="nombre_usuario")
         
         # Botón para guardar cambios
