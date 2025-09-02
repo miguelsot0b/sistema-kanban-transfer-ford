@@ -286,34 +286,32 @@ with st.sidebar.expander("Acceso Administrador"):
         else:
             st.error("❌ Usuario o contraseña incorrectos")
 
-# Función para identificar parejas LH/RH (optimizada)
+# Función para identificar parejas LH/RH (mejorada para considerar todos los grupos)
 @lru_cache(maxsize=32)
 def identificar_parejas(partes_tuple):
     partes = list(partes_tuple)
     parejas = {}
     
-    # Enfoque más eficiente para evitar múltiples reemplazos
+    # Para cada parte, extraer el nombre base (sin LH/RH)
     for parte in partes:
-        lado = None
-        base_name = parte
-        
-        if " LH" in parte:
-            lado = "LH"
-            base_name = parte.replace(" LH", "")
-        elif " RH" in parte:
-            lado = "RH"
-            base_name = parte.replace(" RH", "")
-        
-        if lado:  # Solo procesar si es LH o RH
+        # Verificar si es LH o RH
+        if " LH" in parte or " RH" in parte:
+            # Extraer el nombre base quitando solo la marca LH/RH, no toda la palabra
+            if " LH" in parte:
+                base_name = parte.replace(" LH", "")
+            else:
+                base_name = parte.replace(" RH", "")
+                
+            # Asignar al grupo correcto
             if base_name not in parejas:
                 parejas[base_name] = []
             parejas[base_name].append(parte)
     
-    # Filtrar solo los que tienen pares completos (LH y RH)
-    pares_completos = {k: v for k, v in parejas.items() if len(v) >= 2}
-    return pares_completos
+    # No filtrar por pares completos, incluir todos los grupos
+    # para manejar casos donde hay múltiples LH/RH para el mismo componente base
+    return parejas
 
-# Calcular métricas (optimizado)
+# Calcular métricas (optimizado y corregido para manejar partes en diferentes máquinas)
 def calcular_metricas(catalogo, inventario):
     # Crear una copia del catálogo para no modificar el original
     df = catalogo.copy()
@@ -342,63 +340,63 @@ def calcular_metricas(catalogo, inventario):
     # Calcular tiempo necesario (horas)
     df['TiempoNecesario'] = np.divide(faltante_array, rate_array, out=np.zeros_like(faltante_array, dtype=float), where=rate_array!=0)
     
+    # Crear un mapeo de todas las partes a su grupo base (sin considerar LH/RH)
+    todas_las_partes = tuple(df['Parte'].unique())
+    todos_los_grupos = identificar_parejas(todas_las_partes)
+    
+    # Crear diccionario de mapeo para todas las partes
+    parte_a_grupo = {}
+    for parte in df['Parte']:
+        parte_a_grupo[parte] = parte  # Por defecto, cada parte es su propio grupo
+    
+    # Aplicar mapeo de grupos - ahora considerando todas las partes, no solo las que tienen faltante
+    for base_name, parts in todos_los_grupos.items():
+        for part in parts:
+            parte_a_grupo[part] = base_name
+    
+    # Aplicar directamente el mapeo de grupos a todo el DataFrame
+    df['GrupoParte'] = df['Parte'].map(parte_a_grupo)
+    
     # Filtrar para partes con faltante más eficientemente
     mask_faltante = faltante_array > 0
     if mask_faltante.any():
         df_temp = df[mask_faltante].copy()
         
-        # Identificar parejas LH/RH - convertir a tuple para cache
-        partes_tuple = tuple(df_temp['Parte'].unique())
-        parejas = identificar_parejas(partes_tuple)
+        # Nota: Ya tenemos el GrupoParte asignado para todas las partes
         
-        # Crear una columna para agrupar parejas más eficientemente con un diccionario de mapeo
-        parte_a_grupo = {}
-        for parte in df_temp['Parte']:
-            parte_a_grupo[parte] = parte  # Por defecto, cada parte es su propio grupo
+        # Calcular prioridades por grupo y máquina
+        # Importante: ahora agrupamos SOLO por GrupoParte y no por (GrupoParte, Maquina)
+        # para manejar casos donde el mismo grupo aparece en diferentes máquinas
+        tiempo_por_grupo = df_temp.groupby(['GrupoParte'])['TiempoNecesario'].max().reset_index()
         
-        # Poblar el diccionario de mapeo
-        for base_name, parts in parejas.items():
-            for part in parts:
-                parte_a_grupo[part] = base_name
-        
-        # Aplicar el mapeo directamente
-        df_temp['GrupoParte'] = df_temp['Parte'].map(parte_a_grupo)
-        
-        # Cálculos de tiempo por grupo optimizados
-        tiempo_por_grupo = df_temp.groupby(['GrupoParte', 'Maquina'])['TiempoNecesario'].max().reset_index()
-        
-        # Asignar prioridades de forma vectorizada
-        prioridad_por_maquina = {}
-        for maquina in tiempo_por_grupo['Maquina'].unique():
-            # Filtrar y ordenar en un solo paso
-            indices = tiempo_por_grupo.loc[tiempo_por_grupo['Maquina'] == maquina].sort_values('TiempoNecesario', ascending=False).index
-            # Asignar prioridades en orden
-            for i, idx in enumerate(indices):
-                row = tiempo_por_grupo.loc[idx]
-                prioridad_por_maquina[(row['GrupoParte'], maquina)] = i + 1
-        
-        # Asignar prioridades más eficientemente usando vectorización
-        tiempo_por_grupo['Prioridad'] = tiempo_por_grupo.apply(
-            lambda row: prioridad_por_maquina.get((row['GrupoParte'], row['Maquina']), None), 
-            axis=1
-        )
-        
-        # Fusiones más eficientes usando índices
-        df_temp = df_temp.merge(
-            tiempo_por_grupo[['GrupoParte', 'Maquina', 'Prioridad']], 
-            on=['GrupoParte', 'Maquina'], 
+        # Unir la información de máquina nuevamente
+        tiempo_por_grupo = tiempo_por_grupo.merge(
+            df_temp[['GrupoParte', 'Maquina']].drop_duplicates(),
+            on='GrupoParte',
             how='left'
         )
         
-        # Preparar columnas para el DataFrame principal
-        df['GrupoParte'] = df['Parte']  # Inicializar
+        # Asignar prioridades de forma vectorizada por máquina
+        prioridad_por_maquina = {}
+        for maquina in df['Maquina'].unique():
+            # Filtrar por máquina y ordenar
+            maquina_grupos = tiempo_por_grupo[tiempo_por_grupo['Maquina'] == maquina]
+            if not maquina_grupos.empty:
+                maquina_grupos_sorted = maquina_grupos.sort_values('TiempoNecesario', ascending=False)
+                # Asignar prioridades
+                for i, (_, row) in enumerate(maquina_grupos_sorted.iterrows()):
+                    prioridad_por_maquina[(row['GrupoParte'], maquina)] = i + 1
         
-        # Transferir valores calculados de df_temp a df de manera eficiente
+        # Asignar prioridades al DataFrame temporal
+        df_temp['Prioridad'] = df_temp.apply(
+            lambda row: prioridad_por_maquina.get((row['GrupoParte'], row['Maquina']), None),
+            axis=1
+        )
+        
+        # Transferir prioridades al DataFrame principal para las partes con faltante
         df.loc[mask_faltante, 'Prioridad'] = df_temp['Prioridad'].values
-        df.loc[mask_faltante, 'GrupoParte'] = df_temp['GrupoParte'].values
     else:
         df['Prioridad'] = None
-        df['GrupoParte'] = df['Parte']
     
     return df
 
@@ -440,25 +438,37 @@ if st.session_state.page == 'dashboard':
             # Ordenar por prioridad primero, luego por número de parte más bajo
             prioridades = {}
             for grupo in grupos_partes:
+                # Filtrar por grupo (ahora el grupo incluye todas las LH y RH)
                 partes_grupo = df_faltante[df_faltante['GrupoParte'] == grupo]
                 if not partes_grupo.empty:
-                    # Guardar prioridad y número de parte más bajo para este grupo
+                    # Guardar prioridad y nombre más corto para ordenar de forma intuitiva
                     prioridades[grupo] = (
                         partes_grupo['Prioridad'].iloc[0],  # Prioridad
                         min(partes_grupo['Parte'].tolist())  # Parte más baja lexicográficamente
                     )
             
-            # Ordenar grupos por prioridad primero, luego por número de parte
+            # Ordenar grupos por prioridad primero, luego por nombre
             grupos_ordenados = sorted(prioridades.items(), key=lambda x: (x[1][0], x[1][1]))
             
-            # Tomar el grupo con mayor prioridad (o número de parte más bajo en caso de empate)
+            # Tomar el grupo con mayor prioridad
             grupo_prioritario = grupos_ordenados[0][0]
             
-            # Filtrar las partes de este grupo
+            # Filtrar las partes de este grupo SOLO para esta máquina
+            # (importante para manejar el caso especial de piezas que pueden estar en múltiples máquinas)
             partes_grupo_prioritario = df_faltante[df_faltante['GrupoParte'] == grupo_prioritario]
             
-            # Ordenar las partes por nombre para que siempre aparezca primero el número más bajo
-            partes_grupo_prioritario = partes_grupo_prioritario.sort_values('Parte')
+            # Ordenar las partes primero por LH/RH (para que aparezcan juntas) y luego alfabéticamente
+            def orden_personalizado(parte):
+                if " LH" in parte:
+                    return (parte.replace(" LH", ""), 0)
+                elif " RH" in parte:
+                    return (parte.replace(" RH", ""), 1)
+                return (parte, 2)
+            
+            # Ordenar con la función personalizada
+            partes_grupo_prioritario = partes_grupo_prioritario.copy()
+            partes_grupo_prioritario['orden'] = partes_grupo_prioritario['Parte'].apply(orden_personalizado)
+            partes_grupo_prioritario = partes_grupo_prioritario.sort_values('orden')
             
             # Mostrar también el siguiente grupo en la cola (si existe)
             has_next_group = len(grupos_ordenados) > 1
