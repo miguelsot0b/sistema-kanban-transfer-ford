@@ -371,25 +371,58 @@ def calcular_metricas(catalogo, inventario):
     # Aplicar directamente el mapeo de grupos a todo el DataFrame
     df['GrupoParte'] = df['Parte'].map(parte_a_grupo)
     
+    # Identificar grupos que aparecen en múltiples máquinas
+    grupos_multimaquina = df.groupby('GrupoParte')['Maquina'].nunique()
+    grupos_multimaquina = grupos_multimaquina[grupos_multimaquina > 1].index.tolist()
+    
+    # Marcar las partes que son flexibles (pueden ser producidas en más de una máquina)
+    df['EsFlexible'] = df['GrupoParte'].isin(grupos_multimaquina)
+    
     # Filtrar para partes con faltante más eficientemente
     mask_faltante = faltante_array > 0
     if mask_faltante.any():
         df_temp = df[mask_faltante].copy()
         
-        # Nota: Ya tenemos el GrupoParte asignado para todas las partes
-        
         # Calcular prioridades por grupo y máquina
-        # Importante: ahora agrupamos SOLO por GrupoParte y no por (GrupoParte, Maquina)
-        # para manejar casos donde el mismo grupo aparece en diferentes máquinas
-        tiempo_por_grupo = df_temp.groupby(['GrupoParte'])['TiempoNecesario'].max().reset_index()
+        # Primero calculamos para grupos normales (no flexibles)
+        tiempo_por_grupo = df_temp[~df_temp['EsFlexible']].groupby(['GrupoParte'])['TiempoNecesario'].max().reset_index()
         
-        # Unir la información de máquina nuevamente
+        # Unir la información de máquina nuevamente para grupos normales
         tiempo_por_grupo = tiempo_por_grupo.merge(
             df_temp[['GrupoParte', 'Maquina']].drop_duplicates(),
             on='GrupoParte',
             how='left'
         )
         
+        # Para los grupos flexibles (múltiples máquinas), elegiremos solo una máquina basada en la prioridad
+        for grupo in grupos_multimaquina:
+            grupo_df = df_temp[df_temp['GrupoParte'] == grupo]
+            if not grupo_df.empty:
+                # Para cada grupo flexible con faltante, calculamos qué máquina tiene menos carga
+                # y priorizamos colocar el grupo ahí
+                maquinas_disponibles = grupo_df['Maquina'].unique()
+                
+                # Elegir la máquina con menor tiempo total acumulado
+                maquina_optima = None
+                min_tiempo_total = float('inf')
+                
+                for maquina in maquinas_disponibles:
+                    tiempo_total = df_temp[df_temp['Maquina'] == maquina]['TiempoNecesario'].sum()
+                    if tiempo_total < min_tiempo_total:
+                        min_tiempo_total = tiempo_total
+                        maquina_optima = maquina
+                
+                # Filtrar sólo la máquina óptima para este grupo y añadir a tiempo_por_grupo
+                grupo_fila = {
+                    'GrupoParte': grupo,
+                    'TiempoNecesario': grupo_df[grupo_df['Maquina'] == maquina_optima]['TiempoNecesario'].max(),
+                    'Maquina': maquina_optima
+                }
+                tiempo_por_grupo = pd.concat([tiempo_por_grupo, pd.DataFrame([grupo_fila])], ignore_index=True)
+                
+                # Marcar en df_temp que esta parte flexible usa esta máquina específica
+                df_temp.loc[df_temp['GrupoParte'] == grupo, 'MaquinaSeleccionada'] = maquina_optima
+                
         # Asignar prioridades de forma vectorizada por máquina
         prioridad_por_maquina = {}
         for maquina in df['Maquina'].unique():
@@ -402,10 +435,20 @@ def calcular_metricas(catalogo, inventario):
                     prioridad_por_maquina[(row['GrupoParte'], maquina)] = i + 1
         
         # Asignar prioridades al DataFrame temporal
-        df_temp['Prioridad'] = df_temp.apply(
-            lambda row: prioridad_por_maquina.get((row['GrupoParte'], row['Maquina']), None),
-            axis=1
-        )
+        df_temp['Prioridad'] = None
+        
+        # Para los grupos normales (no flexibles)
+        for idx, row in df_temp[~df_temp['EsFlexible']].iterrows():
+            df_temp.loc[idx, 'Prioridad'] = prioridad_por_maquina.get((row['GrupoParte'], row['Maquina']), None)
+        
+        # Para los grupos flexibles, asignar prioridad solo a la máquina seleccionada
+        for grupo in grupos_multimaquina:
+            grupo_filas = df_temp[df_temp['GrupoParte'] == grupo]
+            if not grupo_filas.empty and 'MaquinaSeleccionada' in grupo_filas.columns:
+                maquina_seleccionada = grupo_filas['MaquinaSeleccionada'].iloc[0]
+                for idx, row in grupo_filas.iterrows():
+                    if row['Maquina'] == maquina_seleccionada:
+                        df_temp.loc[idx, 'Prioridad'] = prioridad_por_maquina.get((row['GrupoParte'], maquina_seleccionada), None)
         
         # Convertir a tipo numérico para evitar problemas de tipos mixtos
         df_temp['Prioridad'] = pd.to_numeric(df_temp['Prioridad'], errors='coerce')
@@ -438,6 +481,37 @@ if st.session_state.page == 'dashboard':
                 st.caption(f"📅 Última actualización: {fecha} por {usuario}")
             except:
                 st.caption(f"📅 Última actualización: {st.session_state.ultima_actualizacion}")
+                
+    # Identificar partes flexibles (pueden estar en múltiples máquinas)
+    partes_flexibles = set()
+    grupos_flexibles = set()
+    
+    # Buscar grupos que aparecen en múltiples máquinas
+    if 'EsFlexible' in df_metricas.columns:
+        grupos_flexibles_df = df_metricas[df_metricas['EsFlexible'] == True]
+        
+        # Si hay partes flexibles, mostrar un mensaje informativo
+        if not grupos_flexibles_df.empty:
+            grupos_unicos = grupos_flexibles_df['GrupoParte'].unique()
+            for grupo in grupos_unicos:
+                # Buscar la máquina con valor de prioridad asignado (no NaN)
+                maquina_asignada = None
+                grupo_df = grupos_flexibles_df[grupos_flexibles_df['GrupoParte'] == grupo]
+                for _, row in grupo_df.iterrows():
+                    if pd.notnull(row['Prioridad']):
+                        maquina_asignada = row['Maquina']
+                        break
+                
+                # Agregar al conjunto de grupos flexibles con su máquina asignada
+                if maquina_asignada:
+                    grupos_flexibles.add((grupo, maquina_asignada))
+                    
+            # Mostrar mensaje informativo sobre productos flexibles
+            if grupos_flexibles:
+                with st.expander("ℹ️ Información sobre productos flexibles"):
+                    st.info("Los siguientes productos pueden ser producidos en múltiples máquinas, pero están asignados a una específica para evitar duplicidad:")
+                    for grupo, maquina in grupos_flexibles:
+                        st.write(f"- **{grupo}**: Asignado a **{maquina}**")
 
     # Crear una fila para cada máquina
     for maquina in maquinas:
@@ -445,6 +519,13 @@ if st.session_state.page == 'dashboard':
         
         # Filtrar partes para esta máquina
         df_maquina = df_metricas[df_metricas['Maquina'] == maquina].copy()
+        
+        # Para partes flexibles, solo incluir las que tienen prioridad asignada en esta máquina
+        if 'EsFlexible' in df_maquina.columns:
+            mask_flexible = df_maquina['EsFlexible'] == True
+            if mask_flexible.any():
+                # Mantener solo las partes flexibles que tienen prioridad asignada
+                df_maquina = df_maquina[~mask_flexible | (~df_maquina['Prioridad'].isna() & mask_flexible)]
         
         # Si hay partes con faltante para esta máquina
         df_faltante = df_maquina[df_maquina['Faltante'] > 0].copy()
@@ -763,6 +844,12 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     # Preparar la tabla para mostrar de manera más eficiente
     df_tabla = df_metricas.copy()
     
+    # Añadir una columna para mostrar si la parte es flexible
+    if 'EsFlexible' in df_tabla.columns:
+        df_tabla['Flexible'] = df_tabla['EsFlexible'].apply(lambda x: "Sí" if x else "No")
+    else:
+        df_tabla['Flexible'] = "No"
+    
     # Aplicar filtros
     if maquina_seleccionada != "Todas":
         df_tabla = df_tabla[df_tabla['Maquina'] == maquina_seleccionada]
@@ -771,6 +858,16 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
         # Filtro de búsqueda case-insensitive
         mascara_busqueda = df_tabla['Parte'].str.lower().str.contains(busqueda_parte.lower())
         df_tabla = df_tabla[mascara_busqueda]
+        
+    # Checkbox para mostrar u ocultar duplicados de partes flexibles
+    mostrar_duplicados = st.checkbox("Mostrar todas las asignaciones de partes flexibles", value=False)
+    
+    if not mostrar_duplicados and 'EsFlexible' in df_tabla.columns:
+        # Filtrar partes flexibles para mostrar solo las que tienen prioridad asignada
+        mask_flexible = df_tabla['EsFlexible'] == True
+        if mask_flexible.any():
+            # Mantener solo las partes flexibles que tienen prioridad asignada o no son flexibles
+            df_tabla = df_tabla[~mask_flexible | (~df_tabla['Prioridad'].isna() & mask_flexible)]
     
     # Ordenar por máquina y prioridad más eficientemente
     # Convertir temporalmente prioridad a numérico para ordenar correctamente
@@ -795,7 +892,7 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
     columnas_mostrar = [
         'Parte', 'GrupoParte', 'Maquina', 'Inventario', 'Objetivo', 
         'Faltante', 'StdPack', 'CajasNecesarias', 
-        'Rate', 'TiempoNecesario', 'Prioridad'
+        'Rate', 'TiempoNecesario', 'Prioridad', 'Flexible'
     ]
     
     # Opción para filtrar solo partes con faltante
