@@ -922,22 +922,37 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
             # Extraer solo el número de transfer para visualización más limpia
             maquina_txt = partes_grupo['Maquina'].iloc[0]
             num_transfer = maquina_txt.split()[1] if len(maquina_txt.split()) > 1 else maquina_txt
-            df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'NumTransfer'] = num_transfer        # Formulario para el plan de producción
-        with st.form("plan_semanal_form"):
-            st.write("Configuración del plan de producción:")
+            df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'NumTransfer'] = num_transfer        # Inicializar la variable de modo en el estado de la sesión si no existe
+        if 'modo_plan_actual' not in st.session_state:
+            st.session_state.modo_plan_actual = "Plan automático"
             
-            # Opción para elegir entre plan automático o manual
-            modo_plan = st.radio(
-                "Modo de planificación:",
-                ["Plan automático", "Plan manual (ingresar cantidades)"],
-                index=0
-            )
+        # Función para actualizar el modo del plan
+        def cambiar_modo_plan():
+            st.session_state.modo_plan_actual = st.session_state.modo_plan_seleccionado
+        
+        # Configuración del plan de producción
+        st.write("### Configuración del plan de producción:")
+        
+        # Opción para elegir entre plan automático o manual (fuera del formulario)
+        modo_plan = st.radio(
+            "Modo de planificación:",
+            ["Plan automático", "Plan manual (ingresar cantidades)"],
+            index=0,
+            key="modo_plan_seleccionado",
+            on_change=cambiar_modo_plan
+        )
+        
+        # Formulario para el plan de producción
+        with st.form("plan_semanal_form"):
             
             col1, col2 = st.columns(2)
             
+            # Obtener el modo actual
+            modo_plan_actual = st.session_state.modo_plan_actual
+            
             # Configuración para ambos modos
             with col1:
-                if modo_plan == "Plan automático":
+                if modo_plan_actual == "Plan automático":
                     tipo_plan = st.radio(
                         "Tipo de plan a generar:",
                         ["Basado en faltantes", "Basado en prioridad", "Producción mínima para todos"],
@@ -955,41 +970,43 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
             capacidad_disponible = dias_produccion * horas_por_dia
             
             # Sección para ingreso manual de cantidades
-            if modo_plan == "Plan manual (ingresar cantidades)":
+            if modo_plan_actual == "Plan manual (ingresar cantidades)":
                 st.write("### Ingrese la cantidad de sets a producir para cada producto:")
                 
                 # Crear un diccionario para almacenar los valores manuales
                 cantidades_manuales = {}
                 
-                # Agrupar por transfer para mejor organización
-                transfers_unicos = sorted(df_simulacion['NumTransfer'].unique())
+                # Crear un contenedor para los controles manuales
+                manual_input_container = st.container()
                 
-                for transfer in transfers_unicos:
-                    st.write(f"### Transfer {transfer}")
-                    
-                    # Filtrar grupos para esta transfer
-                    grupos_transfer = df_simulacion[df_simulacion['NumTransfer'] == transfer]['GrupoParte'].tolist()
+                with manual_input_container:
+                    # Ordenar grupos alfabéticamente
+                    grupos_ordenados = sorted(grupos_unicos)
                     
                     # Organizar los grupos en columnas para mejor visualización
                     cols_por_fila = 2
-                    for i in range(0, len(grupos_transfer), cols_por_fila):
+                    
+                    for i in range(0, len(grupos_ordenados), cols_por_fila):
                         cols = st.columns(cols_por_fila)
+                        
                         for j in range(cols_por_fila):
                             idx = i + j
-                            if idx < len(grupos_transfer):
-                                grupo = grupos_transfer[idx]
-                                std_pack = int(df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'StdPack'].iloc[0])
-                                rate = int(df_simulacion.loc[df_simulacion['GrupoParte'] == grupo, 'Rate'].iloc[0])
+                            if idx < len(grupos_ordenados):
+                                grupo = grupos_ordenados[idx]
                                 
                                 # Obtener información del grupo
                                 row = df_simulacion.loc[df_simulacion['GrupoParte'] == grupo].iloc[0]
+                                std_pack = int(row['StdPack'])
+                                rate = int(row['Rate'])
                                 inventario_actual = row['Inventario']
                                 objetivo = row['Objetivo']
                                 faltante = row['Faltante']
+                                num_transfer = row['NumTransfer']
                                 
                                 with cols[j]:
                                     # Mostrar información del grupo
                                     st.write(f"**{grupo}**")
+                                    st.caption(f"Transfer {num_transfer}")
                                     st.caption(f"Inventario: {int(inventario_actual)}, Objetivo: {int(objetivo)}, Faltante: {int(faltante)}")
                                     st.caption(f"StdPack: {std_pack}, Rate: {rate}/hr")
                                     
@@ -1002,10 +1019,9 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
                                         key=f"plan_manual_{grupo}"
                                     )
                                     
-                                    cantidades_manuales[grupo] = cantidad
-            
-            # Botón para generar el plan
-            if modo_plan == "Plan automático":
+                                    cantidades_manuales[grupo] = cantidad            # Botón para generar el plan
+            # Usar la variable de sesión para determinar el texto del botón
+            if st.session_state.modo_plan_actual == "Plan automático":
                 submitted = st.form_submit_button("Generar Plan de Producción")
             else:
                 submitted = st.form_submit_button("Calcular Plan con Cantidades Ingresadas")
@@ -1014,7 +1030,10 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
                 # Inicializar diccionario para cantidades
                 cantidades_plan = {}
                 
-                if modo_plan == "Plan manual (ingresar cantidades)":
+                # Obtener modo actual desde el estado de la sesión
+                modo_plan_actual = st.session_state.modo_plan_actual
+                
+                if modo_plan_actual == "Plan manual (ingresar cantidades)":
                     # Usar las cantidades ingresadas manualmente
                     cantidades_plan = cantidades_manuales
                     
@@ -1210,22 +1229,33 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
             # Calcular totales
             total_sets = df_mostrar['Cantidad (sets)'].sum()
             
-            # Agrupar por transfer para mostrar resumen
+            # Mostrar todos los transfers en una sola tabla, sin agrupar
+            st.write("### Plan de Producción por Parte")
+            
+            # Ordenar por número de transfer para mostrar agrupados visualmente
+            df_mostrar = df_mostrar.sort_values(['Transfer', 'Grupo de Parte'])
+            
+            # Mostrar el dataframe completo
+            st.dataframe(df_mostrar, hide_index=True)
+            
+            # Mostrar resumen por transfer en formato más compacto
             transfers_unicos = sorted(df_mostrar['Transfer'].unique())
+            transfer_stats = []
             
             for transfer in transfers_unicos:
-                st.write(f"### Resumen Transfer {transfer}")
-                
-                # Filtrar por transfer
+                # Filtrar por transfer para calcular totales
                 df_transfer = df_mostrar[df_mostrar['Transfer'] == transfer]
-                
-                # Mostrar el dataframe filtrado por transfer
-                st.dataframe(df_transfer, hide_index=True)
-                
-                # Mostrar totales para este transfer
                 sets_transfer = df_transfer['Cantidad (sets)'].sum()
                 tiempo_transfer = df_transfer['Tiempo Total (hrs)'].sum()
-                st.info(f"Transfer {transfer}: **{sets_transfer}** sets - Tiempo total: **{tiempo_transfer:.2f}** hrs")
+                transfer_stats.append({
+                    "Transfer": transfer,
+                    "Sets": sets_transfer,
+                    "Tiempo (hrs)": f"{tiempo_transfer:.2f}"
+                })
+            
+            # Mostrar resumen de transfers como una tabla más compacta
+            st.write("### Resumen por Transfer")
+            st.table(pd.DataFrame(transfer_stats))
             
             # Mostrar el resumen general
             st.subheader("Resumen General")
