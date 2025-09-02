@@ -276,17 +276,29 @@ if st.sidebar.button("📊 Dashboard"):
 # Sección para administradores
 st.sidebar.header("Administración")
 
+# Inicializar variables de sesión para los campos de login si no existen
+if 'admin_user_input' not in st.session_state:
+    st.session_state.admin_user_input = ""
+if 'admin_pwd_input' not in st.session_state:
+    st.session_state.admin_pwd_input = ""
+
 # Formulario de login para administradores
 with st.sidebar.expander("Acceso Administrador"):
-    admin_user = st.text_input("Usuario", key="admin_user")
-    admin_pwd = st.text_input("Contraseña", type="password", key="admin_pwd")
+    admin_user = st.text_input("Usuario", key="admin_user", value=st.session_state.admin_user_input)
+    admin_pwd = st.text_input("Contraseña", type="password", key="admin_pwd", value=st.session_state.admin_pwd_input)
     
     if st.button("Iniciar Sesión"):
         if login_admin(admin_user, admin_pwd):
             st.success("✅ Acceso concedido")
+            # Limpiar los campos después de iniciar sesión correctamente
+            st.session_state.admin_user_input = ""
+            st.session_state.admin_pwd_input = ""
             change_page('admin')
         else:
             st.error("❌ Usuario o contraseña incorrectos")
+            # Limpiar los campos también después de un intento fallido
+            st.session_state.admin_user_input = ""
+            st.session_state.admin_pwd_input = ""
 
 # Función para identificar parejas LH/RH (mejorada para considerar todos los grupos)
 @lru_cache(maxsize=32)
