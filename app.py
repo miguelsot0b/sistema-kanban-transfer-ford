@@ -254,9 +254,19 @@ if 'inventario' not in st.session_state or st.session_state.forzar_sincronizacio
             log_cambios = ["Se detectaron cambios en el catálogo, pero no fue necesario actualizar el inventario."]
         
         # Añadir metadatos
+        # Obtener fecha actual en formato CDMX
+        now = datetime.datetime.now()
+        if HAS_PYTZ:
+            # Convertir a hora CDMX
+            now_cdmx = now.astimezone(CDMX_TZ) if now.tzinfo else pytz.utc.localize(now).astimezone(CDMX_TZ)
+            timestamp_format = now_cdmx.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            # Si no está disponible pytz, usar hora del sistema
+            timestamp_format = now.strftime("%Y-%m-%d %H:%M:%S")
+            
         datos_guardado = {
             "inventario": inventario_sincronizado,
-            "ultima_actualizacion": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ultima_actualizacion": timestamp_format,
             "usuario": "Sistema (Sincronización automática)",
             "cambios": log_cambios
         }
@@ -1662,9 +1672,19 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
         if os.path.exists("catalogo.csv"):
             try:
                 # Obtener fecha de modificación del archivo de catálogo
-                fecha_mod_catalogo = datetime.datetime.fromtimestamp(os.path.getmtime("catalogo.csv"))
+                fecha_mod = datetime.datetime.fromtimestamp(os.path.getmtime("catalogo.csv"))
+                
+                # Convertir a hora CDMX
+                if HAS_PYTZ:
+                    # Convertir a hora de Ciudad de México
+                    fecha_mod_cdmx = fecha_mod.astimezone(CDMX_TZ) if fecha_mod.tzinfo else pytz.utc.localize(fecha_mod).astimezone(CDMX_TZ)
+                    fecha_mod_str = fecha_mod_cdmx.strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    # Si no está disponible pytz, usar hora del sistema
+                    fecha_mod_str = fecha_mod.strftime("%Y-%m-%d %H:%M:%S")
+                    
                 st.markdown("### Información del Catálogo")
-                st.markdown(f"**Última modificación:** {fecha_mod_catalogo.strftime('%Y-%m-%d %H:%M:%S')}")
+                st.markdown(f"**Última modificación:** {fecha_mod_str}")
                 st.markdown(f"**Número de partes:** {len(catalogo['Parte'].unique())}")
                 st.markdown(f"**Máquinas:** {', '.join(sorted(catalogo['Maquina'].unique()))}")
             except Exception as e:
