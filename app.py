@@ -11,6 +11,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 import time  # Para trabajar con timestamps
 
+# Importar pytz para manejar la zona horaria de Ciudad de México
+try:
+    import pytz
+    CDMX_TZ = pytz.timezone('America/Mexico_City')
+    HAS_PYTZ = True
+except ImportError:
+    HAS_PYTZ = False
+
 try:
     # Configuración de la página
     st.set_page_config(
@@ -130,9 +138,15 @@ def guardar_inventario(inventario, usuario="Sistema", cambios=None):
         # Convertir el inventario a un formato serializable más eficientemente
         inventario_serializable = {parte: int(cantidad) for parte, cantidad in inventario.items()}
         
-        # Obtener fecha actual en formato estándar
+        # Obtener fecha actual en formato CDMX
         now = datetime.datetime.now()
-        timestamp_format = now.strftime("%Y-%m-%d %H:%M:%S")
+        if HAS_PYTZ:
+            # Convertir a hora de Ciudad de México
+            now_cdmx = now.astimezone(CDMX_TZ) if now.tzinfo else pytz.utc.localize(now).astimezone(CDMX_TZ)
+            timestamp_format = now_cdmx.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            # Si no está disponible pytz, usar hora del sistema
+            timestamp_format = now.strftime("%Y-%m-%d %H:%M:%S")
         
         # Añadir metadatos con fecha en formato consistente
         datos = {
@@ -484,66 +498,8 @@ if st.session_state.page == 'dashboard':
                 usuario = datos.get("usuario", "Sistema")
                 fecha_str = datos.get("ultima_actualizacion", st.session_state.ultima_actualizacion)
                 
-                # Convertir la fecha al formato datetime
-                try:
-                    # Parsear la fecha guardada (formato UTC)
-                    fecha_dt = datetime.datetime.strptime(fecha_str, "%Y-%m-%d %H:%M:%S")
-                    
-                    # Mostrar la hora local del cliente usando JavaScript
-                    st.markdown(
-                        f"""
-                        <div id="ultima-actualizacion">
-                            📅 Última actualización: {fecha_str} por {usuario}
-                        </div>
-
-                        <script>
-                            document.addEventListener('DOMContentLoaded', function() {{
-                                try {{
-                                    // Crear timestamp actual para comparar
-                                    var timestamp = Math.floor(Date.now() / 1000);
-                                    
-                                    // Convertir la fecha almacenada a objeto Date
-                                    var partes = '{fecha_str}'.split(' ');
-                                    var fecha = partes[0];
-                                    var hora = partes[1];
-                                    
-                                    var año = parseInt(fecha.split('-')[0]);
-                                    var mes = parseInt(fecha.split('-')[1]) - 1; // En JS los meses van de 0-11
-                                    var dia = parseInt(fecha.split('-')[2]);
-                                    var horas = parseInt(hora.split(':')[0]);
-                                    var minutos = parseInt(hora.split(':')[1]);
-                                    var segundos = parseInt(hora.split(':')[2]);
-                                    
-                                    // Crear objeto Date local (zona horaria del navegador)
-                                    var fechaObj = new Date(año, mes, dia, horas, minutos, segundos);
-                                    
-                                    // Formatear usando toLocaleString para mostrar en formato local
-                                    var opciones = {{ 
-                                        year: 'numeric', 
-                                        month: '2-digit', 
-                                        day: '2-digit',
-                                        hour: '2-digit',
-                                        minute: '2-digit',
-                                        second: '2-digit',
-                                        hour12: false
-                                    }};
-                                    
-                                    var fechaLocal = fechaObj.toLocaleString(navigator.language, opciones);
-                                    
-                                    document.getElementById('ultima-actualizacion').innerHTML = 
-                                        "📅 Última actualización: " + fechaLocal + " (hora local) por {usuario}";
-                                }} catch(e) {{
-                                    console.error("Error al convertir fecha:", e);
-                                    // Si falla el JavaScript, mantener la fecha original
-                                }}
-                            }});
-                        </script>
-                        """,
-                        unsafe_allow_html=True
-                    )
-                except Exception:
-                    # Si hay error al convertir la fecha, mostrar como estaba originalmente
-                    st.caption(f"📅 Última actualización: {fecha_str} por {usuario}")
+                # Mostrar la fecha directamente (ya está en hora CDMX al guardarse)
+                st.caption(f"📅 Última actualización: {fecha_str} por {usuario}")
             except:
                 st.caption(f"📅 Última actualización: {st.session_state.ultima_actualizacion}")
                 
@@ -852,11 +808,19 @@ elif st.session_state.page == 'update_inventory':
                 st.session_state.inventario = st.session_state.temp_inventario.copy()
                 
                 # Guardar en archivo persistente con registro de cambios
-                # Usar la hora actual para la actualización
+                # Usar la hora actual en CDMX para la actualización
                 ahora = datetime.datetime.now()
+                if HAS_PYTZ:
+                    # Convertir a hora de Ciudad de México
+                    ahora_cdmx = ahora.astimezone(CDMX_TZ) if ahora.tzinfo else pytz.utc.localize(ahora).astimezone(CDMX_TZ)
+                    timestamp_cdmx = ahora_cdmx.strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    # Si no está disponible pytz, usar hora del sistema
+                    timestamp_cdmx = ahora.strftime("%Y-%m-%d %H:%M:%S")
+                
                 datos_guardado = {
                     "inventario": st.session_state.inventario,
-                    "ultima_actualizacion": ahora.strftime("%Y-%m-%d %H:%M:%S"),
+                    "ultima_actualizacion": timestamp_cdmx,
                     "usuario": usuario
                 }
                 
@@ -1718,61 +1682,9 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
                 st.markdown("### Última Actualización del Inventario")
                 fecha_str = datos_inventario.get('ultima_actualizacion', 'Desconocida')
                 
-                # Mostrar la hora usando JavaScript para que sea la hora local del usuario
+                # Mostrar la fecha directamente (ya está en hora CDMX al guardarse)
                 if fecha_str != 'Desconocida':
-                    try:
-                        fecha_dt = datetime.datetime.strptime(fecha_str, "%Y-%m-%d %H:%M:%S")
-                        
-                        st.markdown(
-                            f"""
-                            <div id="ultima-actualizacion-admin">
-                                <strong>Fecha:</strong> {fecha_str}
-                            </div>
-
-                            <script>
-                                document.addEventListener('DOMContentLoaded', function() {{
-                                    try {{
-                                        // Convertir la fecha almacenada a objeto Date
-                                        var partes = '{fecha_str}'.split(' ');
-                                        var fecha = partes[0];
-                                        var hora = partes[1];
-                                        
-                                        var año = parseInt(fecha.split('-')[0]);
-                                        var mes = parseInt(fecha.split('-')[1]) - 1; // En JS los meses van de 0-11
-                                        var dia = parseInt(fecha.split('-')[2]);
-                                        var horas = parseInt(hora.split(':')[0]);
-                                        var minutos = parseInt(hora.split(':')[1]);
-                                        var segundos = parseInt(hora.split(':')[2]);
-                                        
-                                        // Crear objeto Date local (zona horaria del navegador)
-                                        var fechaObj = new Date(año, mes, dia, horas, minutos, segundos);
-                                        
-                                        // Formatear usando toLocaleString para mostrar en formato local
-                                        var opciones = {{ 
-                                            year: 'numeric', 
-                                            month: '2-digit', 
-                                            day: '2-digit',
-                                            hour: '2-digit',
-                                            minute: '2-digit',
-                                            second: '2-digit',
-                                            hour12: false
-                                        }};
-                                        
-                                        var fechaLocal = fechaObj.toLocaleString(navigator.language, opciones);
-                                        
-                                        document.getElementById('ultima-actualizacion-admin').innerHTML = 
-                                            "<strong>Fecha:</strong> " + fechaLocal + " (hora local)";
-                                    }} catch(e) {{
-                                        console.error("Error al convertir fecha:", e);
-                                        // Si falla el JavaScript, mantener la fecha original
-                                    }}
-                                }});
-                            </script>
-                            """,
-                            unsafe_allow_html=True
-                        )
-                    except:
-                        st.markdown(f"**Fecha:** {fecha_str}")
+                    st.markdown(f"**Fecha:** {fecha_str}")
                 else:
                     st.markdown(f"**Fecha:** {fecha_str}")
                     
