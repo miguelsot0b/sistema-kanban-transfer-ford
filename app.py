@@ -10,14 +10,6 @@ from functools import lru_cache
 import plotly.express as px
 import plotly.graph_objects as go
 
-# Importar pytz para manejo de zonas horarias
-try:
-    import pytz
-    TIMEZONE_CDMX = pytz.timezone('America/Mexico_City')
-    HAS_PYTZ = True
-except ImportError:
-    HAS_PYTZ = False
-
 try:
     # Configuración de la página
     st.set_page_config(
@@ -495,25 +487,11 @@ if st.session_state.page == 'dashboard':
                     # Parsear la fecha guardada (formato UTC)
                     fecha_dt = datetime.datetime.strptime(fecha_str, "%Y-%m-%d %H:%M:%S")
                     
-                    # Opción 1: Mostrar la hora local del cliente usando JavaScript
-                    # Con respaldo a la hora de Ciudad de México como opción alternativa
-                    
-                    # Importar para manejar zonas horarias (solo si existe)
-                    try:
-                        import pytz
-                        # Convertir a hora de Ciudad de México
-                        mexico_tz = pytz.timezone('America/Mexico_City')
-                        fecha_cdmx = fecha_dt.astimezone(mexico_tz) if fecha_dt.tzinfo else pytz.utc.localize(fecha_dt).astimezone(mexico_tz)
-                        fecha_cdmx_str = fecha_cdmx.strftime("%Y-%m-%d %H:%M:%S")
-                        usar_cdmx = True
-                    except ImportError:
-                        usar_cdmx = False
-                        fecha_cdmx_str = fecha_str
-                    
+                    # Mostrar la hora local del cliente usando JavaScript
                     st.markdown(
                         f"""
                         <div id="ultima-actualizacion">
-                            📅 Última actualización: {fecha_cdmx_str if usar_cdmx else fecha_str} {" (CDMX)" if usar_cdmx else ""} por {usuario}
+                            📅 Última actualización: {fecha_str} por {usuario}
                         </div>
 
                         <script>
@@ -522,9 +500,9 @@ if st.session_state.page == 'dashboard':
                                     var fechaUtc = new Date('{fecha_dt.strftime("%Y-%m-%d %H:%M:%S")}');
                                     var fechaLocal = fechaUtc.toLocaleString();
                                     document.getElementById('ultima-actualizacion').innerHTML = 
-                                        "📅 Última actualización: " + fechaLocal + " (hora local) por {usuario}";
+                                        "📅 Última actualización: " + fechaLocal + " por {usuario}";
                                 }} catch(e) {{
-                                    // Si falla el JavaScript, ya tenemos el respaldo con fecha CDMX o UTC mostrado
+                                    // Si falla el JavaScript, mantener la fecha original
                                 }}
                             }});
                         </script>
@@ -1706,19 +1684,37 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
                 st.markdown("### Última Actualización del Inventario")
                 fecha_str = datos_inventario.get('ultima_actualizacion', 'Desconocida')
                 
-                # Intentar mostrar la fecha con formato mejorado
-                try:
-                    if fecha_str != 'Desconocida':
+                # Mostrar la hora usando JavaScript para que sea la hora local del usuario
+                if fecha_str != 'Desconocida':
+                    try:
                         fecha_dt = datetime.datetime.strptime(fecha_str, "%Y-%m-%d %H:%M:%S")
-                        if HAS_PYTZ:
-                            # Convertir a hora de México
-                            fecha_cdmx = pytz.utc.localize(fecha_dt).astimezone(TIMEZONE_CDMX)
-                            fecha_str = f"{fecha_cdmx.strftime('%Y-%m-%d %H:%M:%S')} (CDMX)"
-                except Exception:
-                    # Si hay error, usar la fecha original
-                    pass
-                
-                st.markdown(f"**Fecha:** {fecha_str}")
+                        
+                        st.markdown(
+                            f"""
+                            <div id="ultima-actualizacion-admin">
+                                <strong>Fecha:</strong> {fecha_str}
+                            </div>
+
+                            <script>
+                                document.addEventListener('DOMContentLoaded', function() {{
+                                    try {{
+                                        var fechaUtc = new Date('{fecha_dt.strftime("%Y-%m-%d %H:%M:%S")}');
+                                        var fechaLocal = fechaUtc.toLocaleString();
+                                        document.getElementById('ultima-actualizacion-admin').innerHTML = 
+                                            "<strong>Fecha:</strong> " + fechaLocal;
+                                    }} catch(e) {{
+                                        // Si falla el JavaScript, mantener la fecha original
+                                    }}
+                                }});
+                            </script>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                    except:
+                        st.markdown(f"**Fecha:** {fecha_str}")
+                else:
+                    st.markdown(f"**Fecha:** {fecha_str}")
+                    
                 st.markdown(f"**Usuario:** {datos_inventario.get('usuario', 'Sistema')}")
                 
                 # Mostrar cambios si existen
