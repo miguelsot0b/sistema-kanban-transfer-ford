@@ -9,6 +9,7 @@ import datetime
 from functools import lru_cache
 import plotly.express as px
 import plotly.graph_objects as go
+import time  # Para trabajar con timestamps
 
 try:
     # Configuración de la página
@@ -129,13 +130,14 @@ def guardar_inventario(inventario, usuario="Sistema", cambios=None):
         # Convertir el inventario a un formato serializable más eficientemente
         inventario_serializable = {parte: int(cantidad) for parte, cantidad in inventario.items()}
         
-        # Obtener fecha actual, preferentemente en zona horaria de México si pytz está disponible
+        # Obtener fecha actual en formato estándar
         now = datetime.datetime.now()
+        timestamp_format = now.strftime("%Y-%m-%d %H:%M:%S")
         
         # Añadir metadatos con fecha en formato consistente
         datos = {
             "inventario": inventario_serializable,
-            "ultima_actualizacion": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "ultima_actualizacion": timestamp_format,
             "usuario": usuario
         }
         
@@ -497,11 +499,41 @@ if st.session_state.page == 'dashboard':
                         <script>
                             document.addEventListener('DOMContentLoaded', function() {{
                                 try {{
-                                    var fechaUtc = new Date('{fecha_dt.strftime("%Y-%m-%d %H:%M:%S")}');
-                                    var fechaLocal = fechaUtc.toLocaleString();
+                                    // Crear timestamp actual para comparar
+                                    var timestamp = Math.floor(Date.now() / 1000);
+                                    
+                                    // Convertir la fecha almacenada a objeto Date
+                                    var partes = '{fecha_str}'.split(' ');
+                                    var fecha = partes[0];
+                                    var hora = partes[1];
+                                    
+                                    var año = parseInt(fecha.split('-')[0]);
+                                    var mes = parseInt(fecha.split('-')[1]) - 1; // En JS los meses van de 0-11
+                                    var dia = parseInt(fecha.split('-')[2]);
+                                    var horas = parseInt(hora.split(':')[0]);
+                                    var minutos = parseInt(hora.split(':')[1]);
+                                    var segundos = parseInt(hora.split(':')[2]);
+                                    
+                                    // Crear objeto Date local (zona horaria del navegador)
+                                    var fechaObj = new Date(año, mes, dia, horas, minutos, segundos);
+                                    
+                                    // Formatear usando toLocaleString para mostrar en formato local
+                                    var opciones = {{ 
+                                        year: 'numeric', 
+                                        month: '2-digit', 
+                                        day: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                        second: '2-digit',
+                                        hour12: false
+                                    }};
+                                    
+                                    var fechaLocal = fechaObj.toLocaleString(navigator.language, opciones);
+                                    
                                     document.getElementById('ultima-actualizacion').innerHTML = 
-                                        "📅 Última actualización: " + fechaLocal + " por {usuario}";
+                                        "📅 Última actualización: " + fechaLocal + " (hora local) por {usuario}";
                                 }} catch(e) {{
+                                    console.error("Error al convertir fecha:", e);
                                     // Si falla el JavaScript, mantener la fecha original
                                 }}
                             }});
@@ -820,9 +852,11 @@ elif st.session_state.page == 'update_inventory':
                 st.session_state.inventario = st.session_state.temp_inventario.copy()
                 
                 # Guardar en archivo persistente con registro de cambios
+                # Usar la hora actual para la actualización
+                ahora = datetime.datetime.now()
                 datos_guardado = {
                     "inventario": st.session_state.inventario,
-                    "ultima_actualizacion": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "ultima_actualizacion": ahora.strftime("%Y-%m-%d %H:%M:%S"),
                     "usuario": usuario
                 }
                 
@@ -1698,11 +1732,38 @@ elif st.session_state.page == 'admin' and st.session_state.is_admin:
                             <script>
                                 document.addEventListener('DOMContentLoaded', function() {{
                                     try {{
-                                        var fechaUtc = new Date('{fecha_dt.strftime("%Y-%m-%d %H:%M:%S")}');
-                                        var fechaLocal = fechaUtc.toLocaleString();
+                                        // Convertir la fecha almacenada a objeto Date
+                                        var partes = '{fecha_str}'.split(' ');
+                                        var fecha = partes[0];
+                                        var hora = partes[1];
+                                        
+                                        var año = parseInt(fecha.split('-')[0]);
+                                        var mes = parseInt(fecha.split('-')[1]) - 1; // En JS los meses van de 0-11
+                                        var dia = parseInt(fecha.split('-')[2]);
+                                        var horas = parseInt(hora.split(':')[0]);
+                                        var minutos = parseInt(hora.split(':')[1]);
+                                        var segundos = parseInt(hora.split(':')[2]);
+                                        
+                                        // Crear objeto Date local (zona horaria del navegador)
+                                        var fechaObj = new Date(año, mes, dia, horas, minutos, segundos);
+                                        
+                                        // Formatear usando toLocaleString para mostrar en formato local
+                                        var opciones = {{ 
+                                            year: 'numeric', 
+                                            month: '2-digit', 
+                                            day: '2-digit',
+                                            hour: '2-digit',
+                                            minute: '2-digit',
+                                            second: '2-digit',
+                                            hour12: false
+                                        }};
+                                        
+                                        var fechaLocal = fechaObj.toLocaleString(navigator.language, opciones);
+                                        
                                         document.getElementById('ultima-actualizacion-admin').innerHTML = 
-                                            "<strong>Fecha:</strong> " + fechaLocal;
+                                            "<strong>Fecha:</strong> " + fechaLocal + " (hora local)";
                                     }} catch(e) {{
+                                        console.error("Error al convertir fecha:", e);
                                         // Si falla el JavaScript, mantener la fecha original
                                     }}
                                 }});
